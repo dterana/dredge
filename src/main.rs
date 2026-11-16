@@ -1,5 +1,7 @@
 mod cli;
+mod classify;
 mod model;
+mod rules;
 mod scan;
 
 use std::process::ExitCode;

@@ -1,0 +1,41 @@
+[[rule]]
+app = "zsh"
+kind = "config"
+globs = [".zshrc", ".zshenv", ".zprofile", ".zlogin", ".zlogout", ".zsh/**"]
+description = "Zsh shell configuration"
+
+[[rule]]
+app = "zsh"
+kind = "state"
+globs = [".zsh_history", ".zsh_sessions/**", ".zcompdump*"]
+description = "Zsh history and session state"
+
+[[rule]]
+app = "git"
+kind = "config"
+globs = [".gitconfig", ".gitignore_global", ".config/git/**"]
+description = "Git configuration"
+
+[[rule]]
+app = "ngrok"
+kind = "config"
+globs = [".config/ngrok/**", "Library/Application Support/ngrok/**"]
+description = "ngrok tunnel configuration"
+
+[[rule]]
+app = "claude"
+kind = "config"
+globs = [".claude/settings.json", ".claude/settings.local.json", ".claude/CLAUDE.md", ".claude/commands/**", ".claude/skills/**", ".claude/agents/**"]
+description = "Claude Code settings and customizations"
+
+[[rule]]
+app = "claude"
+kind = "state"
+globs = [".claude.json", ".claude/projects/**", ".claude/todos/**", ".claude/history.jsonl"]
+description = "Claude Code session state"
+
+[[rule]]
+app = "herdr"
+kind = "config"
+globs = [".config/herdr/**"]
+description = "herdr configuration"
