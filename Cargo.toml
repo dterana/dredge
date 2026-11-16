@@ -1,0 +1,18 @@
+[package]
+name = "dredge"
+version = "0.1.0"
+edition = "2021"
+description = "Read-only CLI that reports untracked or drifted dotfiles and secrets in a home directory"
+license = "MIT OR Apache-2.0"
+
+[[bin]]
+name = "dredge"
+path = "src/main.rs"
+
+[dependencies]
+anyhow = "1"
+clap = { version = "4", features = ["derive"] }
+
+[dev-dependencies]
+assert_cmd = "2"
+tempfile = "3"
