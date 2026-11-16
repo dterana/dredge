@@ -254,6 +254,28 @@ fn chezmoiroot_symlinked_file_or_subdir_is_ignored() {
 }
 
 #[test]
+fn chezmoiroot_intermediate_symlink_is_ignored() {
+    let f = Fixture::new();
+    let outside = f.dir("outside");
+    write(&outside.join("b/dot_evil"), "a");
+    let repo = f.dir("cz");
+    write(&repo.join("dot_in"), "a");
+    std::os::unix::fs::symlink(&outside, repo.join("a")).unwrap();
+    write(&repo.join(".chezmoiroot"), "a/b");
+    assert_eq!(paths(&build_with_timeout(&repo)), vec![".in"]);
+}
+
+#[test]
+fn chezmoiroot_nested_real_dirs_are_honored() {
+    let f = Fixture::new();
+    let repo = f.dir("cz");
+    write(&repo.join("dot_top"), "a");
+    write(&repo.join("src/home/dot_zshrc"), "a");
+    write(&repo.join(".chezmoiroot"), "src/home");
+    assert_eq!(paths(&build_with_timeout(&repo)), vec![".zshrc"]);
+}
+
+#[test]
 fn chezmoiroot_fifo_does_not_hang() {
     let f = Fixture::new();
     let repo = f.dir("cz");

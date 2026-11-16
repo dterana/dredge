@@ -212,11 +212,20 @@ fn chezmoi_root(dir: &Path) -> PathBuf {
         && sub
             .components()
             .all(|c| matches!(c, std::path::Component::Normal(_)));
-    let target = dir.join(sub);
-    let real_dir = plain
-        && std::fs::symlink_metadata(&target)
-            .map(|m| m.file_type().is_dir())
-            .unwrap_or(false);
+    // Every accumulated prefix must be a real directory (no symlinks).
+    let mut target = dir.to_path_buf();
+    let mut real_dir = plain;
+    if plain {
+        for comp in sub.components() {
+            target.push(comp);
+            real_dir = std::fs::symlink_metadata(&target)
+                .map(|m| m.file_type().is_dir())
+                .unwrap_or(false);
+            if !real_dir {
+                break;
+            }
+        }
+    }
     if real_dir {
         target
     } else {
