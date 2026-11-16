@@ -143,9 +143,8 @@ fn multiple_matches_one_line_and_repeats_report_each_with_correct_lines() {
     let fx = Fixture::new();
     let p = fx.root().join("multi");
     let aws = "AKIAABCDEFGHIJKLMNOP";
-    let body = format!(
-        "{aws} and {aws} again\nnothing\r\n-----BEGIN RSA PRIVATE KEY-----\n{aws}\n"
-    );
+    let body =
+        format!("{aws} and {aws} again\nnothing\r\n-----BEGIN RSA PRIVATE KEY-----\n{aws}\n");
     fs::write(&p, body).unwrap();
     let found = scan_file(&p, &SecretRules::embedded()).unwrap();
     let got: Vec<(&str, usize)> = found.iter().map(|f| (f.rule_id.as_str(), f.line)).collect();

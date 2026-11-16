@@ -58,7 +58,10 @@ mod tests {
 
     #[test]
     fn ngrok_yml_is_config_with_app_name() {
-        assert_eq!(k(".config/ngrok/ngrok.yml"), (Some("ngrok".into()), Kind::Config));
+        assert_eq!(
+            k(".config/ngrok/ngrok.yml"),
+            (Some("ngrok".into()), Kind::Config)
+        );
     }
 
     #[test]

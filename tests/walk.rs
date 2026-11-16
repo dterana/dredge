@@ -219,5 +219,9 @@ fn symlinked_root_is_reported_not_walked() {
     let r = walk::scan(&walk::default_roots(&home), &allowed);
     assert_eq!(r.symlinks, vec![home.join(".config")]);
     assert_eq!(r.units.len(), 1);
-    assert!(r.units.iter().flat_map(|u| &u.files).all(|f| !f.starts_with(fx.root().join("dotfiles"))));
+    assert!(r
+        .units
+        .iter()
+        .flat_map(|u| &u.files)
+        .all(|f| !f.starts_with(fx.root().join("dotfiles"))));
 }

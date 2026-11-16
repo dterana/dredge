@@ -3,7 +3,11 @@ use std::path::PathBuf;
 use clap::{Args, Parser, Subcommand, ValueEnum};
 
 #[derive(Debug, Parser)]
-#[command(name = "dredge", version, about = "Report untracked or drifted dotfiles and secrets")]
+#[command(
+    name = "dredge",
+    version,
+    about = "Report untracked or drifted dotfiles and secrets"
+)]
 pub struct Cli {
     #[command(subcommand)]
     pub command: Command,
@@ -52,7 +56,12 @@ pub struct ScanArgs {
     pub no_color: bool,
 
     /// Conditions that cause a non-zero exit (comma separated)
-    #[arg(long, value_enum, value_delimiter = ',', default_value = "secrets,drift")]
+    #[arg(
+        long,
+        value_enum,
+        value_delimiter = ',',
+        default_value = "secrets,drift"
+    )]
     pub fail_on: Vec<FailOn>,
 
     /// Dotfiles repository layout
