@@ -182,18 +182,102 @@ fn chezmoi_tmpl_is_tracked_no_drift() {
     );
 }
 
+fn build_with_timeout(repo: &Path) -> Index {
+    let repo = repo.to_path_buf();
+    let (tx, rx) = std::sync::mpsc::channel();
+    std::thread::spawn(move || {
+        let _ = tx.send(Index::build(&repo, Layout::Chezmoi));
+    });
+    rx.recv_timeout(std::time::Duration::from_secs(5))
+        .expect("Index::build hung")
+        .unwrap()
+}
+
+fn paths(index: &Index) -> Vec<String> {
+    index
+        .entries()
+        .map(|(k, _)| k.to_string_lossy().into_owned())
+        .collect()
+}
+
 #[test]
-fn chezmoiroot_is_honored_and_does_not_crash() {
+fn chezmoiroot_is_honored() {
     let f = Fixture::new();
     let repo = f.dir("cz");
     write(&repo.join(".chezmoiroot"), "home\n");
     write(&repo.join("home/dot_zshrc"), "a");
     write(&repo.join("dot_ignored"), "a");
-    let index = Index::build(&repo, Layout::Chezmoi).unwrap();
-    assert!(index.lookup(Path::new(".zshrc")).is_some());
-    assert!(index.lookup(Path::new(".ignored")).is_none());
-    write(&repo.join(".chezmoiroot"), "../nope");
-    assert!(Index::build(&repo, Layout::Chezmoi).is_ok());
+    assert_eq!(paths(&build_with_timeout(&repo)), vec![".zshrc"]);
+}
+
+#[test]
+fn chezmoiroot_invalid_values_are_ignored_and_never_escape() {
+    let f = Fixture::new();
+    let outside = f.dir("outside");
+    write(&outside.join("dot_evil"), "a");
+    write(&f.root().join("dot_evil2"), "a");
+    for value in [
+        outside.to_string_lossy().into_owned(),
+        "../outside".to_string(),
+        "".to_string(),
+        "missing".to_string(),
+    ] {
+        let repo = f.dir("cz");
+        write(&repo.join("dot_in"), "a");
+        write(&repo.join(".chezmoiroot"), &value);
+        assert_eq!(
+            paths(&build_with_timeout(&repo)),
+            vec![".in"],
+            "value {value:?}"
+        );
+        fs::remove_dir_all(&repo).unwrap();
+    }
+}
+
+#[test]
+fn chezmoiroot_symlinked_file_or_subdir_is_ignored() {
+    let f = Fixture::new();
+    let outside = f.dir("outside");
+    write(&outside.join("dot_evil"), "a");
+    write(&outside.join("rootfile"), "sub");
+    let repo = f.dir("cz");
+    write(&repo.join("dot_in"), "a");
+    write(&repo.join("sub/dot_inner"), "a");
+    // symlinked .chezmoiroot pointing at a file naming a real subdir
+    std::os::unix::fs::symlink(outside.join("rootfile"), repo.join(".chezmoiroot")).unwrap();
+    assert_eq!(paths(&build_with_timeout(&repo)), vec![".in", "sub/.inner"]);
+    fs::remove_file(repo.join(".chezmoiroot")).unwrap();
+    // regular .chezmoiroot naming a symlink to an outside dir
+    std::os::unix::fs::symlink(&outside, repo.join("link")).unwrap();
+    write(&repo.join(".chezmoiroot"), "link");
+    assert_eq!(paths(&build_with_timeout(&repo)), vec![".in", "sub/.inner"]);
+}
+
+#[test]
+fn chezmoiroot_fifo_does_not_hang() {
+    let f = Fixture::new();
+    let repo = f.dir("cz");
+    write(&repo.join("dot_in"), "a");
+    f.fifo("cz/.chezmoiroot");
+    assert_eq!(paths(&build_with_timeout(&repo)), vec![".in"]);
+}
+
+#[test]
+fn decide_does_not_hang_on_fifo_home_path() {
+    let f = Fixture::new();
+    let repo = f.dir("dotfiles");
+    write(&repo.join("zsh/.zshrc"), "a");
+    let fifo = f.fifo("home/.zshrc");
+    let index = Index::build(&repo, Layout::Stow).unwrap();
+    let (tx, rx) = std::sync::mpsc::channel();
+    let repo2 = repo.clone();
+    std::thread::spawn(move || {
+        let _ = tx.send(decide(&fifo, Path::new(".zshrc"), &repo2, &index));
+    });
+    let got = rx
+        .recv_timeout(std::time::Duration::from_secs(5))
+        .expect("decide hung");
+    assert_eq!(got, Tracking::Untracked);
 }
 
 #[test]

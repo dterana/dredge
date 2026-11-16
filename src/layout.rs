@@ -180,21 +180,47 @@ fn walk_chezmoi(
     Ok(())
 }
 
-/// Real chezmoi source root: honors `.chezmoiroot` when it names a plain
-/// relative subdirectory; anything else falls back to `dir`.
+/// Real chezmoi source root. `.chezmoiroot` is honored only when it is a
+/// small regular file (not a symlink, FIFO, etc.) naming a plain relative
+/// subdirectory that is a real directory (not a symlink). On any violation
+/// it is ignored and `dir` itself is indexed.
 fn chezmoi_root(dir: &Path) -> PathBuf {
-    let Ok(text) = std::fs::read_to_string(dir.join(".chezmoiroot")) else {
-        return dir.to_path_buf();
+    const MAX_ROOT_FILE: u64 = 4096;
+    let fallback = || dir.to_path_buf();
+    let file = dir.join(".chezmoiroot");
+    match std::fs::symlink_metadata(&file) {
+        Ok(m) if m.file_type().is_file() && m.len() <= MAX_ROOT_FILE => {}
+        _ => return fallback(),
+    }
+    let Ok(Some(f)) = crate::secrets::open_regular(&file) else {
+        return fallback();
+    };
+    let mut buf = Vec::new();
+    {
+        use std::io::Read;
+        if f.take(MAX_ROOT_FILE + 1).read_to_end(&mut buf).is_err()
+            || buf.len() as u64 > MAX_ROOT_FILE
+        {
+            return fallback();
+        }
+    }
+    let Ok(text) = String::from_utf8(buf) else {
+        return fallback();
     };
     let sub = Path::new(text.trim());
     let plain = !text.trim().is_empty()
         && sub
             .components()
             .all(|c| matches!(c, std::path::Component::Normal(_)));
-    if plain && dir.join(sub).is_dir() {
-        dir.join(sub)
+    let target = dir.join(sub);
+    let real_dir = plain
+        && std::fs::symlink_metadata(&target)
+            .map(|m| m.file_type().is_dir())
+            .unwrap_or(false);
+    if real_dir {
+        target
     } else {
-        dir.to_path_buf()
+        fallback()
     }
 }
 

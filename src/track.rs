@@ -1,6 +1,6 @@
 #![allow(dead_code)]
 
-use std::fs::{self, File};
+use std::fs;
 use std::io::Read;
 use std::path::{Path, PathBuf};
 
@@ -8,9 +8,14 @@ use sha2::{Digest, Sha256};
 
 use crate::layout::Index;
 use crate::model::Tracking;
+use crate::secrets::open_regular;
 
-fn sha256_file(path: &Path) -> std::io::Result<Vec<u8>> {
-    let mut f = File::open(path)?;
+/// Streaming hash. Ok(None) when the path is not a regular file (symlink,
+/// FIFO, ...) at open time; the open never follows symlinks or blocks.
+fn sha256_file(path: &Path) -> std::io::Result<Option<Vec<u8>>> {
+    let Some(mut f) = open_regular(path)? else {
+        return Ok(None);
+    };
     let mut h = Sha256::new();
     let mut buf = [0u8; 64 * 1024];
     loop {
@@ -20,7 +25,7 @@ fn sha256_file(path: &Path) -> std::io::Result<Vec<u8>> {
         }
         h.update(&buf[..n]);
     }
-    Ok(h.finalize().to_vec())
+    Ok(Some(h.finalize().to_vec()))
 }
 
 pub fn decide(home_file: &Path, home_rel: &Path, dotfiles: &Path, index: &Index) -> Tracking {
@@ -53,9 +58,14 @@ pub fn decide(home_file: &Path, home_rel: &Path, dotfiles: &Path, index: &Index)
         Ok(m) if m.file_type().is_file() => {}
         _ => return Tracking::TrackedUnverified,
     }
-    match (sha256_file(home_file), sha256_file(&entry.repo_path)) {
-        (Ok(a), Ok(b)) if a == b => Tracking::Tracked,
-        (Ok(_), Ok(_)) => Tracking::TrackedDrifted,
+    // Home side first: not hashable (swapped to symlink/FIFO, unreadable)
+    // means we cannot call it tracked.
+    let Ok(Some(home_hash)) = sha256_file(home_file) else {
+        return Tracking::Untracked;
+    };
+    match sha256_file(&entry.repo_path) {
+        Ok(Some(repo_hash)) if repo_hash == home_hash => Tracking::Tracked,
+        Ok(Some(_)) => Tracking::TrackedDrifted,
         _ => Tracking::TrackedUnverified,
     }
 }
