@@ -9,7 +9,7 @@ use common::Fixture;
 use dredge::cli::{Cli, Command, FailOn};
 use dredge::dredgeignore::IgnoreList;
 use dredge::exit;
-use dredge::model::{Finding, Kind, Report, Tracking, Unit};
+use dredge::model::{Drift, Finding, Kind, Report, Tracking, Unit};
 
 fn unit(path: &str, tracking: Tracking, findings: Vec<Finding>) -> Unit {
     Unit {
@@ -89,6 +89,19 @@ fn default_untracked_only_exits_zero() {
 fn drift_exits_one_by_default() {
     let r = report(vec![unit(".foo", Tracking::TrackedDrifted, vec![])]);
     assert_eq!(exit::code(&r, &default_fail_on()), 1);
+}
+
+#[test]
+fn partially_tracked_unit_with_drift_fails_on_drift() {
+    let mut u = unit(".config/git", Tracking::PartiallyTracked, vec![]);
+    u.drifted.push(Drift {
+        path: PathBuf::from(".config/git/config"),
+        repo_path: PathBuf::from("git/.config/git/config"),
+    });
+    let r = report(vec![u]);
+    assert_eq!(exit::code(&r, &[FailOn::Drift]), 1);
+    assert_eq!(exit::code(&r, &default_fail_on()), 1);
+    assert_eq!(exit::code(&r, &[FailOn::Secrets]), 0);
 }
 
 #[test]

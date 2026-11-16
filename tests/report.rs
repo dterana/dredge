@@ -533,3 +533,29 @@ fn non_tty_output_has_no_color_codes() {
     let rep = e.run(&e.with_dots(&[]));
     assert!(render_human(&rep, true, false).contains('\u{1b}'));
 }
+
+#[test]
+fn drift_in_partially_tracked_unit_is_listed_and_exits_one() {
+    let e = Env::new();
+    e.d("git/.config/git/config", "[core]\n  editor = vim\n");
+    e.h(".config/git/config", "[core]\n  editor = nano\n");
+    e.h(".config/git/extra", "[alias]\n");
+    let rep = e.run(&e.with_dots(&[]));
+    let unit = rep
+        .units
+        .iter()
+        .find(|u| u.path == rep.home.join(".config/git"))
+        .unwrap();
+    assert_eq!(unit.tracking, Tracking::PartiallyTracked);
+    let out = render_human(&rep, false, false);
+    assert_order(
+        &out,
+        &[
+            "TRACKED, DRIFTED",
+            "~/.config/git/config",
+            "differs from dots/git/.config/git/config",
+            "UNKNOWN (",
+        ],
+    );
+    e.bin().arg("--dotfiles").arg(e.dots()).assert().code(1);
+}
