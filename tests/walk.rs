@@ -57,7 +57,7 @@ fn default_roots_and_home_dot_filter() {
     let r = walk::scan_home(&home, &[]);
     assert!(r.units.iter().all(|u| u.path != home.join("notes.txt")));
     unit(&r, &home.join(".zshrc"));
-    unit(&r, &home.join(".config"));
+    assert!(r.units.iter().all(|u| u.path != home.join(".config")));
     unit(&r, &home.join(".config/app"));
     unit(&r, &home.join("Library/Preferences/a.plist"));
 }
@@ -182,4 +182,42 @@ fn home_that_is_symlink_resolves() {
     for u in &r.units {
         assert!(u.path.starts_with(fx.root().join("real")));
     }
+}
+
+#[test]
+fn default_roots_never_enumerate_non_dot_home_children() {
+    let fx = Fixture::new();
+    fx.file("h/Documents/d.txt");
+    fx.file("h/Desktop/d.txt");
+    fx.file("h/Library/Caches/c");
+    fx.file("h/Library/Application Support/app/s");
+    fx.file("h/Library/Preferences/p.plist");
+    fx.file("h/.zshrc");
+    fx.file("h/.ssh/config");
+    let home = fx.root().join("h");
+    let r = walk::scan(&walk::default_roots(&home), &[]);
+    let mut got: Vec<PathBuf> = r.units.iter().map(|u| u.path.clone()).collect();
+    got.sort();
+    let mut want = vec![
+        home.join(".ssh"),
+        home.join(".zshrc"),
+        home.join("Library/Application Support/app"),
+        home.join("Library/Preferences/p.plist"),
+    ];
+    want.sort();
+    assert_eq!(got, want);
+}
+
+#[test]
+fn symlinked_root_is_reported_not_walked() {
+    let fx = Fixture::new();
+    fx.file("dotfiles/ngrok/ngrok.yml");
+    fx.file("h/.zshrc");
+    fx.symlink("h/.config", &fx.root().join("dotfiles"));
+    let home = fx.root().join("h");
+    let allowed = vec![fx.root().join("dotfiles")];
+    let r = walk::scan(&walk::default_roots(&home), &allowed);
+    assert_eq!(r.symlinks, vec![home.join(".config")]);
+    assert_eq!(r.units.len(), 1);
+    assert!(r.units.iter().flat_map(|u| &u.files).all(|f| !f.starts_with(fx.root().join("dotfiles"))));
 }
