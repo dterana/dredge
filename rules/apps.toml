@@ -11,10 +11,466 @@ globs = [".zsh_history", ".zsh_sessions/**", ".zcompdump*"]
 description = "Zsh history and session state"
 
 [[rule]]
+app = "bash"
+kind = "config"
+globs = [".bashrc", ".bash_profile", ".bash_login", ".bash_logout"]
+description = "Bash shell configuration"
+
+[[rule]]
+app = "bash"
+kind = "state"
+globs = [".bash_history", ".bash_sessions/**"]
+description = "Bash history and session state"
+
+[[rule]]
+app = "fish"
+kind = "config"
+globs = [".config/fish/**"]
+description = "Fish shell configuration"
+
+[[rule]]
+app = "fish"
+kind = "state"
+globs = [".local/share/fish/**"]
+description = "Fish history and data"
+
+[[rule]]
+app = "nushell"
+kind = "config"
+globs = [".config/nushell/**"]
+description = "Nushell configuration"
+
+[[rule]]
 app = "git"
 kind = "config"
 globs = [".gitconfig", ".gitignore_global", ".config/git/**"]
 description = "Git configuration"
+
+[[rule]]
+app = "gh"
+kind = "config"
+globs = [".config/gh/**"]
+description = "GitHub CLI configuration and hosts"
+
+[[rule]]
+app = "glab"
+kind = "config"
+globs = [".config/glab-cli/**"]
+description = "GitLab CLI configuration"
+
+[[rule]]
+app = "lazygit"
+kind = "config"
+globs = [".config/lazygit/**", "Library/Application Support/lazygit/**"]
+description = "lazygit configuration"
+
+[[rule]]
+app = "neovim"
+kind = "config"
+globs = [".config/nvim/**"]
+description = "Neovim configuration"
+
+[[rule]]
+app = "neovim"
+kind = "state"
+globs = [".local/share/nvim/**", ".local/state/nvim/**"]
+description = "Neovim data and state"
+
+[[rule]]
+app = "vim"
+kind = "config"
+globs = [".vimrc", ".vim/**"]
+description = "Vim configuration"
+
+[[rule]]
+app = "vim"
+kind = "state"
+globs = [".viminfo"]
+description = "Vim session history"
+
+[[rule]]
+app = "vscode"
+kind = "config"
+globs = ["Library/Application Support/Code/User/settings.json", "Library/Application Support/Code/User/keybindings.json", "Library/Application Support/Code/User/snippets/**"]
+description = "Visual Studio Code user settings, keybindings and snippets"
+
+[[rule]]
+app = "vscode"
+kind = "cache"
+globs = ["Library/Application Support/Code/Cache/**", "Library/Application Support/Code/CachedData/**", "Library/Application Support/Code/Crashpad/**", "Library/Application Support/Code/GPUCache/**", "Library/Application Support/Code/Service Worker/**"]
+description = "Visual Studio Code caches"
+
+[[rule]]
+app = "vscode"
+kind = "state"
+globs = ["Library/Application Support/Code/logs/**", "Library/Application Support/Code/User/workspaceStorage/**", "Library/Application Support/Code/User/globalStorage/**"]
+description = "Visual Studio Code logs and per-workspace state"
+
+[[rule]]
+app = "zed"
+kind = "config"
+globs = [".config/zed/**"]
+description = "Zed editor configuration"
+
+[[rule]]
+app = "sublime-text"
+kind = "config"
+globs = ["Library/Application Support/Sublime Text/Packages/User/**"]
+description = "Sublime Text user packages and settings"
+
+[[rule]]
+app = "ghostty"
+kind = "config"
+globs = [".config/ghostty/**", "Library/Application Support/com.mitchellh.ghostty/**"]
+description = "Ghostty terminal configuration"
+
+[[rule]]
+app = "kitty"
+kind = "config"
+globs = [".config/kitty/**"]
+description = "kitty terminal configuration"
+
+[[rule]]
+app = "alacritty"
+kind = "config"
+globs = [".config/alacritty/**", ".alacritty.toml", ".alacritty.yml"]
+description = "Alacritty terminal configuration"
+
+[[rule]]
+app = "wezterm"
+kind = "config"
+globs = [".wezterm.lua", ".config/wezterm/**"]
+description = "WezTerm terminal configuration"
+
+[[rule]]
+app = "iterm2"
+kind = "config"
+globs = ["Library/Preferences/com.googlecode.iterm2.plist"]
+description = "iTerm2 preferences"
+
+[[rule]]
+app = "tmux"
+kind = "config"
+globs = [".tmux.conf", ".config/tmux/**"]
+description = "tmux configuration"
+
+[[rule]]
+app = "tmux"
+kind = "state"
+globs = [".tmux/resurrect/**"]
+description = "tmux-resurrect saved sessions"
+
+[[rule]]
+app = "starship"
+kind = "config"
+globs = [".config/starship.toml"]
+description = "Starship prompt configuration"
+
+[[rule]]
+app = "atuin"
+kind = "config"
+globs = [".config/atuin/**"]
+description = "Atuin shell history configuration"
+
+[[rule]]
+app = "atuin"
+kind = "state"
+globs = [".local/share/atuin/**"]
+description = "Atuin history database"
+
+[[rule]]
+app = "direnv"
+kind = "config"
+globs = [".config/direnv/**", ".direnvrc"]
+description = "direnv configuration"
+
+[[rule]]
+app = "fzf"
+kind = "config"
+globs = [".fzf.zsh", ".fzf.bash"]
+description = "fzf shell integration scripts"
+
+[[rule]]
+app = "zoxide"
+kind = "state"
+globs = [".local/share/zoxide/**"]
+description = "zoxide directory database"
+
+[[rule]]
+app = "bat"
+kind = "config"
+globs = [".config/bat/**"]
+description = "bat configuration"
+
+[[rule]]
+app = "ripgrep"
+kind = "config"
+globs = [".ripgreprc"]
+description = "ripgrep default flags"
+
+[[rule]]
+app = "htop"
+kind = "config"
+globs = [".config/htop/**", ".htoprc"]
+description = "htop configuration"
+
+[[rule]]
+app = "btop"
+kind = "config"
+globs = [".config/btop/**"]
+description = "btop configuration"
+
+[[rule]]
+app = "aws"
+kind = "config"
+globs = [".aws/config", ".aws/credentials"]
+description = "AWS CLI configuration and credentials file"
+
+[[rule]]
+app = "aws"
+kind = "cache"
+globs = [".aws/cli/cache/**", ".aws/sso/cache/**"]
+description = "AWS CLI and SSO token caches"
+
+[[rule]]
+app = "gcloud"
+kind = "state"
+globs = [".config/gcloud/logs/**"]
+description = "Google Cloud CLI logs"
+
+[[rule]]
+app = "gcloud"
+kind = "config"
+globs = [".config/gcloud/**"]
+description = "Google Cloud CLI configuration"
+
+[[rule]]
+app = "kubectl"
+kind = "config"
+globs = [".kube/config"]
+description = "kubectl cluster configuration"
+
+[[rule]]
+app = "kubectl"
+kind = "cache"
+globs = [".kube/cache/**"]
+description = "kubectl discovery and HTTP caches"
+
+[[rule]]
+app = "azure"
+kind = "config"
+globs = [".azure/**"]
+description = "Azure CLI configuration"
+
+[[rule]]
+app = "docker"
+kind = "config"
+globs = [".docker/config.json"]
+description = "Docker CLI configuration"
+
+[[rule]]
+app = "ssh"
+kind = "config"
+globs = [".ssh/config", ".ssh/authorized_keys", ".ssh/id_*"]
+description = "OpenSSH client configuration, authorized keys and key files"
+
+[[rule]]
+app = "ssh"
+kind = "state"
+globs = [".ssh/known_hosts*"]
+description = "OpenSSH known hosts"
+
+[[rule]]
+app = "gnupg"
+kind = "config"
+globs = [".gnupg/gpg.conf", ".gnupg/gpg-agent.conf", ".gnupg/dirmngr.conf", ".gnupg/scdaemon.conf", ".gnupg/pubring.kbx", ".gnupg/private-keys-v1.d/**"]
+description = "GnuPG configuration and keyring"
+
+[[rule]]
+app = "gnupg"
+kind = "state"
+globs = [".gnupg/trustdb.gpg", ".gnupg/random_seed"]
+description = "GnuPG trust database and random seed"
+
+[[rule]]
+app = "npm"
+kind = "config"
+globs = [".npmrc"]
+description = "npm configuration"
+
+[[rule]]
+app = "npm"
+kind = "cache"
+globs = [".npm/_cacache/**"]
+description = "npm package cache"
+
+[[rule]]
+app = "npm"
+kind = "state"
+globs = [".npm/_logs/**"]
+description = "npm debug logs"
+
+[[rule]]
+app = "yarn"
+kind = "config"
+globs = [".yarnrc", ".yarnrc.yml"]
+description = "Yarn configuration"
+
+[[rule]]
+app = "pnpm"
+kind = "config"
+globs = [".config/pnpm/**"]
+description = "pnpm configuration"
+
+[[rule]]
+app = "pnpm"
+kind = "cache"
+globs = ["Library/pnpm/store/**"]
+description = "pnpm content-addressable store"
+
+[[rule]]
+app = "cargo"
+kind = "config"
+globs = [".cargo/config.toml", ".cargo/config", ".cargo/credentials.toml", ".cargo/credentials"]
+description = "Cargo configuration and registry credentials"
+
+[[rule]]
+app = "cargo"
+kind = "cache"
+globs = [".cargo/registry/**", ".cargo/git/**"]
+description = "Cargo registry and git checkouts cache"
+
+[[rule]]
+app = "rustup"
+kind = "config"
+globs = [".rustup/settings.toml"]
+description = "rustup settings"
+
+[[rule]]
+app = "rustup"
+kind = "cache"
+globs = [".rustup/toolchains/**", ".rustup/downloads/**", ".rustup/tmp/**"]
+description = "rustup installed toolchains and downloads"
+
+[[rule]]
+app = "rustup"
+kind = "state"
+globs = [".rustup/update-hashes/**"]
+description = "rustup update hashes"
+
+[[rule]]
+app = "pip"
+kind = "config"
+globs = [".config/pip/**", ".pip/pip.conf"]
+description = "pip configuration"
+
+[[rule]]
+app = "bundler"
+kind = "config"
+globs = [".gemrc", ".bundle/config"]
+description = "RubyGems and Bundler configuration"
+
+[[rule]]
+app = "go"
+kind = "config"
+globs = [".config/go/env", "Library/Application Support/go/env"]
+description = "Go toolchain environment settings"
+
+[[rule]]
+app = "go"
+kind = "cache"
+globs = ["go/pkg/mod/**"]
+description = "Go module cache"
+
+[[rule]]
+app = "volta"
+kind = "config"
+globs = [".volta/hooks.json"]
+description = "Volta hooks configuration"
+
+[[rule]]
+app = "asdf"
+kind = "config"
+globs = [".asdfrc", ".tool-versions"]
+description = "asdf configuration and global tool versions"
+
+[[rule]]
+app = "mise"
+kind = "config"
+globs = [".config/mise/**"]
+description = "mise configuration"
+
+[[rule]]
+app = "homebrew"
+kind = "config"
+globs = ["Brewfile", ".config/homebrew/**"]
+description = "Homebrew bundle and environment configuration"
+
+[[rule]]
+app = "gradle"
+kind = "config"
+globs = [".gradle/gradle.properties"]
+description = "Gradle user properties"
+
+[[rule]]
+app = "gradle"
+kind = "cache"
+globs = [".gradle/caches/**"]
+description = "Gradle dependency and build caches"
+
+[[rule]]
+app = "maven"
+kind = "config"
+globs = [".m2/settings.xml"]
+description = "Maven user settings"
+
+[[rule]]
+app = "maven"
+kind = "cache"
+globs = [".m2/repository/**"]
+description = "Maven local repository"
+
+[[rule]]
+app = "editorconfig"
+kind = "config"
+globs = [".editorconfig"]
+description = "EditorConfig defaults"
+
+[[rule]]
+app = "curl"
+kind = "config"
+globs = [".curlrc"]
+description = "curl configuration"
+
+[[rule]]
+app = "wget"
+kind = "config"
+globs = [".wgetrc"]
+description = "wget configuration"
+
+[[rule]]
+app = "psql"
+kind = "config"
+globs = [".psqlrc", ".pgpass"]
+description = "PostgreSQL client configuration and password file"
+
+[[rule]]
+app = "psql"
+kind = "state"
+globs = [".psql_history"]
+description = "psql command history"
+
+[[rule]]
+app = "less"
+kind = "state"
+globs = [".lesshst"]
+description = "less search and command history"
+
+[[rule]]
+app = "python"
+kind = "state"
+globs = [".python_history"]
+description = "Python REPL history"
 
 [[rule]]
 app = "ngrok"
@@ -33,6 +489,12 @@ app = "claude"
 kind = "state"
 globs = [".claude.json", ".claude/projects/**", ".claude/todos/**", ".claude/history.jsonl"]
 description = "Claude Code session state"
+
+[[rule]]
+app = "claude"
+kind = "cache"
+globs = [".claude/statsig/**", ".claude/shell-snapshots/**"]
+description = "Claude Code telemetry cache and shell snapshots"
 
 [[rule]]
 app = "herdr"

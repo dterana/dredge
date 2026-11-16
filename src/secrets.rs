@@ -12,19 +12,19 @@ const EMBEDDED: &str = include_str!("../rules/secrets.toml");
 
 pub const MAX_SCAN_BYTES: u64 = 1_048_576;
 
+/// One secret rule as written in the rules file, including disabled rules.
 #[derive(Debug, Deserialize)]
-struct RawRule {
-    id: String,
-    regex: String,
-    enabled: bool,
-    #[allow(dead_code)]
-    source: String,
+pub struct RuleDef {
+    pub id: String,
+    pub regex: String,
+    pub enabled: bool,
+    pub source: String,
 }
 
 #[derive(Debug, Deserialize)]
 struct RawFile {
     #[serde(default)]
-    rule: Vec<RawRule>,
+    rule: Vec<RuleDef>,
 }
 
 #[derive(Debug, Default)]
@@ -39,6 +39,12 @@ impl SecretRules {
     /// a test asserts the embedded file parses.
     pub fn embedded() -> SecretRules {
         SecretRules::parse(EMBEDDED).unwrap_or_default()
+    }
+
+    /// Parses rule definitions without compiling them. Used by schema tests.
+    pub fn parse_defs(text: &str) -> Result<Vec<RuleDef>, String> {
+        let raw: RawFile = toml::from_str(text).map_err(|e| e.to_string())?;
+        Ok(raw.rule)
     }
 
     pub fn parse(text: &str) -> Result<SecretRules, String> {

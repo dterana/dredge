@@ -11,8 +11,8 @@ const FAKE: &str = "FAKE_TOKEN_9f8e7d6c5b4a3210";
 #[test]
 fn embedded_rules_parse() {
     let rules = SecretRules::parse(include_str!("../rules/secrets.toml")).unwrap();
-    assert_eq!(rules.len(), 4);
-    assert_eq!(SecretRules::embedded().len(), 4);
+    assert_eq!(rules.len(), 22);
+    assert_eq!(SecretRules::embedded().len(), 22);
 }
 
 #[test]

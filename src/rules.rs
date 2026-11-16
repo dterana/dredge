@@ -14,18 +14,19 @@ pub struct RuleMatch {
     pub description: String,
 }
 
+/// One rule as written in the rules file, before globs are compiled.
 #[derive(Debug, Deserialize)]
-struct RawRule {
-    app: String,
-    kind: Kind,
-    globs: Vec<String>,
-    description: String,
+pub struct RuleDef {
+    pub app: String,
+    pub kind: Kind,
+    pub globs: Vec<String>,
+    pub description: String,
 }
 
 #[derive(Debug, Deserialize)]
 struct RawFile {
     #[serde(default)]
-    rule: Vec<RawRule>,
+    rule: Vec<RuleDef>,
 }
 
 #[derive(Debug)]
@@ -46,6 +47,12 @@ impl Rules {
     /// a test asserts the embedded file parses.
     pub fn embedded() -> Rules {
         Rules::parse(EMBEDDED).unwrap_or_default()
+    }
+
+    /// Parses rule definitions without compiling globs. Used by schema tests.
+    pub fn parse_defs(text: &str) -> Result<Vec<RuleDef>, String> {
+        let raw: RawFile = toml::from_str(text).map_err(|e| e.to_string())?;
+        Ok(raw.rule)
     }
 
     pub fn parse(text: &str) -> Result<Rules, String> {
