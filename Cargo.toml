@@ -4,6 +4,9 @@ version = "0.1.0"
 edition = "2021"
 description = "Read-only CLI that reports untracked or drifted dotfiles and secrets in a home directory"
 license = "MIT OR Apache-2.0"
+readme = "README.md"
+keywords = ["dotfiles", "secrets", "audit", "stow", "chezmoi"]
+categories = ["command-line-utilities", "development-tools"]
 
 [[bin]]
 name = "dredge"
