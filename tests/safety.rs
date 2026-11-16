@@ -36,8 +36,19 @@ struct Run {
 
 /// Runs the binary with a deadline. A hang fails the test instead of blocking.
 fn run_bin(args: &[&str], timeout: Duration) -> Run {
+    // Structural "never the real home": cwd is the fixture root and HOME is the
+    // fixture home, both derived from the --home argument every test passes.
+    let home_arg = args
+        .iter()
+        .position(|a| *a == "--home")
+        .and_then(|i| args.get(i + 1))
+        .map(PathBuf::from)
+        .unwrap();
+    let cwd = home_arg.parent().unwrap().to_path_buf();
     let mut child = Command::new(BIN)
         .args(args)
+        .current_dir(cwd)
+        .env("HOME", &home_arg)
         .env_remove("NO_COLOR")
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
@@ -319,15 +330,47 @@ fn seeded_secrets_never_in_stdout_or_stderr() {
         &["--json", "--all"],
         &["--fail-on", "untracked"],
     ];
-    let mut saw_secret_section = false;
+    // Detection guard: the absence checks below prove nothing unless each
+    // seeded family is actually detected, both untracked (home) and committed
+    // (dotfiles). SECRETS[1] is a base64 key body that no rule matches: it is
+    // a negative control and is only checked for absence.
+    let r = e.scan(&["--json", "--all"]);
+    let v: serde_json::Value = serde_json::from_str(&r.stdout).unwrap();
+    let mut committed = Vec::new();
+    if let Some(a) = v["committed_secrets"].as_array() {
+        for f in a {
+            committed.push((
+                f["rule_id"].as_str().unwrap_or("").to_string(),
+                f["path"].as_str().unwrap_or("").to_string(),
+            ));
+        }
+    }
+    let mut untracked = Vec::new();
+    collect_rule_paths(&v["units"], &mut untracked);
+    for rule in [
+        "private-key",
+        "aws-access-key-id",
+        "github-token",
+        "ngrok-authtoken",
+    ] {
+        assert!(
+            committed
+                .iter()
+                .any(|(r, p)| r == rule && p.contains("/dots/")),
+            "rule {rule} not detected in dotfiles tree"
+        );
+        assert!(
+            untracked
+                .iter()
+                .any(|(r, p)| r == rule && p.contains("/home/")),
+            "rule {rule} not detected in home"
+        );
+    }
+
     for extra in runs {
         let r = e.scan(extra);
         assert_no_leak(&format!("{extra:?}"), &r);
-        if r.stdout.contains("SECRET") || r.stdout.contains("secret") {
-            saw_secret_section = true;
-        }
     }
-    assert!(saw_secret_section, "fixture produced no secret findings");
 
     // error path
     let h = e.home_s();
@@ -449,8 +492,9 @@ fn symlink_to_outside_not_followed() {
         &format!("{}\n", SECRETS[0]),
     );
     std::os::unix::fs::symlink(&outside, e.home().join(".outside_link")).unwrap();
-    std::os::unix::fs::symlink(&outside, e.home().join(".config/linked_cfg")).ok();
     e.h(".config/app/real.conf", "a = 1\n");
+    std::os::unix::fs::symlink(&outside, e.home().join(".config/app/linked_cfg")).unwrap();
+    std::os::unix::fs::symlink(&outside, e.home().join(".config/linked_root")).unwrap();
     e.d("zsh/.zshrc", "export A=1\n");
 
     for extra in [&[][..], &["--json"], &["--all"]] {
@@ -471,6 +515,29 @@ fn symlink_to_outside_not_followed() {
             all.contains(".outside_link"),
             "{extra:?}: link not reported"
         );
+        assert!(
+            all.contains(".config/linked_root"),
+            "{extra:?}: root link not reported"
+        );
+    }
+    // Exact pipeline behaviour: root-level links are units flagged `symlink`;
+    // a link nested in a unit is folded into that unit (which is not itself
+    // a symlink) and never followed.
+    let r = e.scan(&["--json", "--all"]);
+    let v: serde_json::Value = serde_json::from_str(&r.stdout).unwrap();
+    let units = v["units"].as_array().unwrap();
+    let find = |suffix: &str| {
+        units
+            .iter()
+            .find(|u| u["path"].as_str().is_some_and(|p| p.ends_with(suffix)))
+            .unwrap_or_else(|| panic!("unit {suffix} missing"))
+    };
+    assert_eq!(find("/.outside_link")["symlink"], true);
+    assert_eq!(find("/.config/linked_root")["symlink"], true);
+    assert_eq!(find("/.config/app")["symlink"], false);
+    for u in units {
+        let p = u["path"].as_str().unwrap_or("");
+        assert!(!p.contains("outside-zzz"), "outside path became a unit");
     }
 }
 
@@ -498,6 +565,11 @@ fn socket_in_home_is_skipped() {
         r.stderr
     );
     assert!(r.stderr.is_empty(), "stderr: {}", r.stderr);
+    assert!(!r.stdout.contains("agent.sock"), "socket reported");
+    assert!(!r.stdout.contains(".root_socket"), "root socket reported");
+    // Control: the sibling regular file's unit is listed.
+    assert!(r.stdout.contains(".config/app"), "control unit missing");
+    assert!(sock_dir.join("agent.sock").exists());
 }
 
 #[test]
@@ -529,6 +601,25 @@ fn huge_file_is_skipped_for_secret_scan() {
         !secret_paths.iter().any(|p| p.contains("bigapp")),
         "huge file was scanned: {secret_paths:?}"
     );
+}
+
+/// Collects (rule_id, path) from any JSON object that has a `rule_id`.
+fn collect_rule_paths(v: &serde_json::Value, out: &mut Vec<(String, String)>) {
+    match v {
+        serde_json::Value::Object(m) => {
+            if let (Some(r), Some(p)) = (
+                m.get("rule_id").and_then(|x| x.as_str()),
+                m.get("path").and_then(|x| x.as_str()),
+            ) {
+                out.push((r.to_string(), p.to_string()));
+            }
+            for c in m.values() {
+                collect_rule_paths(c, out);
+            }
+        }
+        serde_json::Value::Array(a) => a.iter().for_each(|c| collect_rule_paths(c, out)),
+        _ => {}
+    }
 }
 
 /// Collects `path` strings from any JSON object that also has a `rule_id`.
