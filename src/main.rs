@@ -1,3 +1,5 @@
+#![cfg_attr(not(test), deny(clippy::unwrap_used, clippy::expect_used))]
+
 use std::io::{IsTerminal, Write};
 use std::process::ExitCode;
 
