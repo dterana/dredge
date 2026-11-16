@@ -1,0 +1,535 @@
+mod common;
+
+use std::fs;
+use std::os::unix::fs::symlink;
+use std::path::{Path, PathBuf};
+
+use assert_cmd::Command as Bin;
+use clap::Parser;
+use common::Fixture;
+use dredge::cli::{Cli, Command, ScanArgs};
+use dredge::model::{Kind, Report, Tracking};
+use dredge::report::{display_path, render_human, render_json};
+use dredge::scan;
+
+/// Seeded fake secrets. None of these may ever appear in any output.
+const NGROK_VALUE: &str = "2abcDEFghiJKLmnoPQRstuVWxyz123456";
+const GH_VALUE: &str = "ghp_abcdefghijklmnopqrstuvwxyzABCDEFGHIJ";
+const AWS_VALUE: &str = "AKIAQWERTYUIOPASDFGH";
+
+fn write(path: &Path, contents: &str) {
+    fs::create_dir_all(path.parent().unwrap()).unwrap();
+    fs::write(path, contents).unwrap();
+}
+
+struct Env {
+    fx: Fixture,
+}
+
+impl Env {
+    fn new() -> Env {
+        let fx = Fixture::new();
+        fs::create_dir_all(fx.root().join("home")).unwrap();
+        Env { fx }
+    }
+    fn home(&self) -> PathBuf {
+        self.fx.root().join("home")
+    }
+    fn dots(&self) -> PathBuf {
+        self.fx.root().join("dots")
+    }
+    fn h(&self, rel: &str, contents: &str) -> PathBuf {
+        let p = self.home().join(rel);
+        write(&p, contents);
+        p
+    }
+    fn d(&self, rel: &str, contents: &str) -> PathBuf {
+        let p = self.dots().join(rel);
+        write(&p, contents);
+        p
+    }
+    fn args(&self, extra: &[&str]) -> ScanArgs {
+        let mut v: Vec<String> = vec!["dredge".into(), "scan".into(), "--home".into()];
+        v.push(self.home().to_string_lossy().into_owned());
+        v.extend(extra.iter().map(|s| s.to_string()));
+        let Command::Scan(args) = Cli::parse_from(v).command;
+        args
+    }
+    fn with_dots(&self, extra: &[&str]) -> ScanArgs {
+        let mut v = vec![
+            "--dotfiles".to_string(),
+            self.dots().to_string_lossy().into_owned(),
+        ];
+        v.extend(extra.iter().map(|s| s.to_string()));
+        let refs: Vec<&str> = v.iter().map(String::as_str).collect();
+        self.args(&refs)
+    }
+    fn run(&self, args: &ScanArgs) -> Report {
+        scan::run(args).unwrap()
+    }
+    fn bin(&self) -> Bin {
+        let mut c = Bin::cargo_bin("dredge").unwrap();
+        c.env_remove("NO_COLOR")
+            .args(["scan", "--home"])
+            .arg(self.home());
+        c
+    }
+}
+
+/// A home with one item in every section, against a stow repo.
+fn rich() -> Env {
+    let e = Env::new();
+    // drifted
+    e.d("zsh/.zshrc", "export A=1\n");
+    e.h(".zshrc", "export A=2\n");
+    // tracked, in sync
+    e.d("git/.gitconfig", "[user]\n  name = x\n");
+    e.h(".gitconfig", "[user]\n  name = x\n");
+    // in repo, missing on this machine
+    e.d("vim/.vimrc", "set nu\n");
+    // committed secret, and a gitignored one that must not be reported
+    e.d("shell/.envrc", &format!("export GITHUB_TOKEN={GH_VALUE}\n"));
+    e.d(".gitignore", "local.env\n");
+    e.d("shell/local.env", &format!("AWS={AWS_VALUE}\n"));
+    // untracked config with a secret, and without
+    e.h(
+        ".config/ngrok/ngrok.yml",
+        &format!("authtoken: {NGROK_VALUE}\n"),
+    );
+    e.h(".config/herdr/config.toml", "theme = 1\n");
+    // unknown
+    e.h(".config/mystery/a.conf", "x = 1\n");
+    // cache and state
+    e.h(".cache/thing/blob", "cached\n");
+    e.h(".zsh_history", "ls\n");
+    e
+}
+
+const HUMAN_SECTIONS: &[&str] = &[
+    "COMMITTED SECRETS",
+    "UNTRACKED SECRETS",
+    "UNTRACKED CONFIG",
+    "TRACKED, DRIFTED",
+    "UNKNOWN (",
+    "COULD NOT READ",
+    "IGNORED",
+];
+
+fn assert_order(out: &str, sections: &[&str]) {
+    let mut last = 0;
+    for s in sections {
+        let at = out[last..]
+            .find(s)
+            .unwrap_or_else(|| panic!("section {s} missing or out of order in:\n{out}"));
+        last += at + s.len();
+    }
+}
+
+#[test]
+fn human_output_section_order() {
+    let e = rich();
+    let rep = e.run(&e.with_dots(&[]));
+    let out = render_human(&rep, false, false);
+    assert_order(&out, HUMAN_SECTIONS);
+    assert!(out.contains("IN REPO, MISSING ON THIS MACHINE"), "{out}");
+    assert_order(
+        &out,
+        &["IGNORED", "IN REPO, MISSING ON THIS MACHINE", "~/.vimrc"],
+    );
+    assert!(out.contains("differs from dots/zsh/.zshrc"), "{out}");
+    insta::assert_snapshot!("human_rich", out);
+}
+
+#[test]
+fn json_has_schema_version_and_same_findings() {
+    let e = rich();
+    let rep = e.run(&e.with_dots(&[]));
+    let v: serde_json::Value = serde_json::from_str(&render_json(&rep)).unwrap();
+    assert_eq!(v["schema_version"], 1);
+    let units = v["units"].as_array().unwrap();
+    assert_eq!(units.len(), rep.units.len());
+    let json_findings: Vec<(String, u64)> = units
+        .iter()
+        .flat_map(|u| u["findings"].as_array().unwrap().iter())
+        .map(|f| {
+            (
+                f["rule_id"].as_str().unwrap().to_string(),
+                f["line"].as_u64().unwrap(),
+            )
+        })
+        .collect();
+    let model_findings: Vec<(String, u64)> = rep
+        .units
+        .iter()
+        .flat_map(|u| u.findings.iter())
+        .map(|f| (f.rule_id.clone(), f.line as u64))
+        .collect();
+    assert_eq!(json_findings, model_findings);
+    assert_eq!(json_findings, vec![("ngrok-authtoken".to_string(), 1)]);
+    let committed = v["committed_secrets"].as_array().unwrap();
+    assert_eq!(committed.len(), 1);
+    assert_eq!(committed[0]["rule_id"], "github-token");
+    assert!(committed[0]["path"]
+        .as_str()
+        .unwrap()
+        .ends_with("shell/.envrc"));
+    assert!(v["missing_on_machine"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .any(|m| m == ".vimrc"));
+    let home = rep.home.to_string_lossy().into_owned();
+    let normalized = render_json(&rep).replace(&home, "<HOME>").replace(
+        &rep.dotfiles.clone().unwrap().to_string_lossy().into_owned(),
+        "<DOTS>",
+    );
+    insta::assert_snapshot!("json_rich", normalized);
+}
+
+#[test]
+fn unknown_capped_at_twenty_with_count() {
+    let e = Env::new();
+    for i in 0..25 {
+        e.h(&format!(".config/unk{i:02}/a.conf"), "x\n");
+    }
+    let rep = e.run(&e.args(&[]));
+    let out = render_human(&rep, false, false);
+    assert!(
+        out.contains("UNKNOWN (25)  showing 20, run with --all to list"),
+        "{out}"
+    );
+    assert!(out.contains("~/.config/unk19"), "{out}");
+    assert!(!out.contains("~/.config/unk20"), "{out}");
+    let all = render_human(&rep, false, true);
+    assert!(all.contains("UNKNOWN (25)\n"), "{all}");
+    assert!(all.contains("~/.config/unk24"), "{all}");
+}
+
+#[test]
+fn all_flag_lists_cache_and_state() {
+    let e = rich();
+    let rep = e.run(&e.with_dots(&[]));
+    let out = render_human(&rep, false, false);
+    assert!(out.contains("2 cache/state items"), "{out}");
+    assert!(!out.contains("~/.cache"), "{out}");
+    assert!(!out.contains("~/.zsh_history"), "{out}");
+    let all = render_human(&rep, false, true);
+    assert!(all.contains("CACHE/STATE"), "{all}");
+    assert!(all.contains("~/.cache"), "{all}");
+    assert!(all.contains("~/.zsh_history"), "{all}");
+    assert!(all.contains("TRACKED\n"), "{all}");
+    assert!(all.contains("~/.gitconfig"), "{all}");
+    // Every unit, cache and state too, stays in the report.
+    assert!(rep.units.iter().any(|u| u.kind == Kind::Cache));
+    assert!(rep.units.iter().any(|u| u.kind == Kind::State));
+}
+
+fn assert_no_secret(s: &str) {
+    for v in [NGROK_VALUE, GH_VALUE, AWS_VALUE] {
+        assert!(!s.contains(v), "secret value leaked");
+        assert!(!s.contains(&v[..12]), "secret prefix leaked");
+        assert!(!s.contains(&v[v.len() - 12..]), "secret suffix leaked");
+    }
+}
+
+#[test]
+fn output_never_contains_seeded_secret_value() {
+    let e = rich();
+    let rep = e.run(&e.with_dots(&[]));
+    for all in [false, true] {
+        for color in [false, true] {
+            assert_no_secret(&render_human(&rep, color, all));
+        }
+    }
+    assert_no_secret(&render_json(&rep));
+    assert_no_secret(&format!("{rep:?}"));
+    for json in [false, true] {
+        let mut c = e.bin();
+        c.arg("--dotfiles").arg(e.dots()).arg("--all");
+        if json {
+            c.arg("--json");
+        }
+        let out = c.output().unwrap();
+        assert_no_secret(&String::from_utf8_lossy(&out.stdout));
+        assert_no_secret(&String::from_utf8_lossy(&out.stderr));
+    }
+}
+
+#[test]
+fn clean_machine_prints_all_none_sections() {
+    let e = Env::new();
+    let rep = e.run(&e.args(&[]));
+    assert!(rep.dotfiles.is_none());
+    let out = render_human(&rep, false, false);
+    assert_order(&out, HUMAN_SECTIONS);
+    assert!(!out.contains("MISSING ON THIS MACHINE"), "{out}");
+    insta::assert_snapshot!("human_clean", out);
+    e.bin().assert().code(0);
+}
+
+#[test]
+fn stow_symlinked_zshrc_and_symlinked_config_dir_are_tracked() {
+    let e = Env::new();
+    let zshrc = e.d("zsh/.zshrc", "export A=1\n");
+    e.d("ghostty/.config/ghostty/config", "font-size = 12\n");
+    symlink(&zshrc, e.home().join(".zshrc")).unwrap();
+    fs::create_dir_all(e.home().join(".config")).unwrap();
+    symlink(
+        e.dots().join("ghostty/.config/ghostty"),
+        e.home().join(".config/ghostty"),
+    )
+    .unwrap();
+    // A symlink pointing elsewhere is untracked.
+    let elsewhere = e.fx.file("elsewhere/.inputrc");
+    symlink(&elsewhere, e.home().join(".inputrc")).unwrap();
+    // A nested symlink into the repo inside a walked unit counts for that unit.
+    e.d("git/.config/git/ignore", "*.swp\n");
+    e.h(".config/git/config", "[core]\n");
+    symlink(
+        e.dots().join("git/.config/git/ignore"),
+        e.home().join(".config/git/ignore"),
+    )
+    .unwrap();
+
+    let rep = e.run(&e.with_dots(&[]));
+    let get = |rel: &str| {
+        let p = rep.home.join(rel);
+        rep.units
+            .iter()
+            .find(|u| u.path == p)
+            .unwrap_or_else(|| panic!("no unit {rel}: {:#?}", rep.units))
+    };
+    assert_eq!(get(".zshrc").tracking, Tracking::Tracked);
+    assert!(get(".zshrc").symlink);
+    assert_eq!(get(".config/ghostty").tracking, Tracking::Tracked);
+    assert_eq!(get(".inputrc").tracking, Tracking::Untracked);
+    assert_eq!(get(".config/git").tracking, Tracking::PartiallyTracked);
+    assert!(
+        rep.missing_on_machine.is_empty(),
+        "{:?}",
+        rep.missing_on_machine
+    );
+}
+
+#[test]
+fn committed_secret_in_dotfiles_tree_is_reported_and_gitignored_file_is_not() {
+    let e = Env::new();
+    e.d("shell/.envrc", &format!("export GITHUB_TOKEN={GH_VALUE}\n"));
+    e.d(".gitignore", "local.env\nignored-dir/\n");
+    e.d("shell/local.env", &format!("AWS={AWS_VALUE}\n"));
+    e.d("ignored-dir/x", &format!("AWS={AWS_VALUE}\n"));
+    // .git is skipped even when it holds secrets
+    e.d(".git/config", &format!("AWS={AWS_VALUE}\n"));
+    // a symlink in the repo is not followed
+    let outside = e.fx.root().join("outside.txt");
+    write(&outside, &format!("AWS={AWS_VALUE}\n"));
+    symlink(&outside, e.dots().join("link.txt")).unwrap();
+    let rep = e.run(&e.with_dots(&[]));
+    let got: Vec<(String, PathBuf, usize, bool)> = rep
+        .committed_findings
+        .iter()
+        .map(|f| (f.rule_id.clone(), f.path.clone(), f.line, f.committed))
+        .collect();
+    let dots = fs::canonicalize(e.dots()).unwrap();
+    assert_eq!(
+        got,
+        vec![(
+            "github-token".to_string(),
+            dots.join("shell/.envrc"),
+            1,
+            true
+        )]
+    );
+    let out = render_human(&rep, false, false);
+    assert!(out.contains("github-token"), "{out}");
+    assert!(out.contains("dots/shell/.envrc"), "{out}");
+    assert_no_secret(&out);
+}
+
+#[test]
+fn secret_in_ignored_path_is_still_reported_and_exit_one() {
+    let e = Env::new();
+    e.d("zsh/.zshrc", "export A=1\n");
+    e.d(".dredgeignore", ".config/ngrok\n");
+    e.h(
+        ".config/ngrok/ngrok.yml",
+        &format!("authtoken: {NGROK_VALUE}\n"),
+    );
+    let out = e.bin().arg("--dotfiles").arg(e.dots()).output().unwrap();
+    assert_eq!(out.status.code(), Some(1));
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert_order(
+        &stdout,
+        &["UNTRACKED SECRETS", "ngrok-authtoken", "UNTRACKED CONFIG"],
+    );
+    assert!(stdout.contains("~/.config/ngrok/ngrok.yml"), "{stdout}");
+    assert!(stdout.contains("1 ignored by .dredgeignore"), "{stdout}");
+    assert_no_secret(&stdout);
+}
+
+#[test]
+fn cache_and_state_files_are_never_secret_scanned() {
+    let e = Env::new();
+    e.h(
+        ".cache/tool/token.txt",
+        &format!("authtoken: {NGROK_VALUE}\n"),
+    );
+    e.h(".zsh_history", &format!("export T={GH_VALUE}\n"));
+    e.h(".foo/data.db", &format!("authtoken: {NGROK_VALUE}\n"));
+    // cache and state files inside a config unit are not scanned either
+    e.h(".claude/settings.json", "{}\n");
+    e.h(".claude/cache/blob", &format!("authtoken: {NGROK_VALUE}\n"));
+    e.h(
+        ".claude/history.jsonl",
+        &format!("authtoken: {NGROK_VALUE}\n"),
+    );
+    // nor a cache file inside an unknown unit
+    e.h(".config/mystery/a.conf", "x = 1\n");
+    e.h(
+        ".config/mystery/node_modules/x",
+        &format!("authtoken: {NGROK_VALUE}\n"),
+    );
+    let rep = e.run(&e.args(&[]));
+    let claude = rep
+        .units
+        .iter()
+        .find(|u| u.path == rep.home.join(".claude"))
+        .unwrap();
+    assert_eq!(claude.kind, Kind::Config);
+    // Cache/state files inside mixed units are not counted in the summary.
+    assert_eq!(rep.cache_state_count, 3, "{:#?}", rep.units);
+    assert!(
+        rep.units.iter().all(|u| u.findings.is_empty()),
+        "{:#?}",
+        rep.units
+    );
+    e.bin().assert().code(0);
+}
+
+#[test]
+fn preferences_plist_is_listed_but_not_scanned() {
+    let e = Env::new();
+    let plist = e.h(
+        "Library/Preferences/com.example.app.plist",
+        &format!("<string>authtoken: {NGROK_VALUE}</string>\n"),
+    );
+    let rep = e.run(&e.args(&[]));
+    let plist = fs::canonicalize(plist).unwrap();
+    let unit = rep
+        .units
+        .iter()
+        .find(|u| u.path == plist)
+        .expect("plist listed");
+    assert!(unit.findings.is_empty());
+    let out = render_human(&rep, false, false);
+    assert!(
+        out.contains("~/Library/Preferences/com.example.app.plist"),
+        "{out}"
+    );
+}
+
+#[test]
+fn json_is_valid_with_non_utf8_path_name() {
+    use std::ffi::OsStr;
+    use std::os::unix::ffi::OsStrExt;
+    let e = Env::new();
+    let name = OsStr::from_bytes(b".bad\xffname");
+    let created = fs::write(e.home().join(name), "x\n").is_ok();
+    let rep = if created {
+        eprintln!("branch: created a non-UTF-8 file name on disk");
+        e.run(&e.args(&[]))
+    } else {
+        eprintln!("branch: filesystem refused the name, testing the lossy helper directly");
+        Report {
+            home: e.home(),
+            units: Vec::new(),
+            unreadable: vec![e.home().join(name)],
+            ..Report::default()
+        }
+    };
+    let json = render_json(&rep);
+    let v: serde_json::Value = serde_json::from_str(&json).expect("valid json");
+    assert_eq!(v["schema_version"], 1);
+    assert!(json.contains("\u{fffd}"), "{json}");
+    // The display helper never fails on such a name either.
+    let shown = display_path(&rep, &rep.home.join(name));
+    assert!(shown.starts_with("~/.bad"), "{shown}");
+    assert!(shown.contains('\u{fffd}'));
+}
+
+#[test]
+fn missing_dotfiles_dir_is_error() {
+    let e = Env::new();
+    let args = e.with_dots(&[]);
+    let err = scan::run(&args).unwrap_err();
+    assert!(err.to_string().contains("--dotfiles"), "{err}");
+    let out = e.bin().arg("--dotfiles").arg(e.dots()).output().unwrap();
+    assert_eq!(out.status.code(), Some(2));
+    assert_eq!(String::from_utf8_lossy(&out.stderr).lines().count(), 1);
+}
+
+#[test]
+fn chezmoi_default_source_dir_is_auto_detected() {
+    let e = Env::new();
+    e.h(".local/share/chezmoi/dot_zshrc", "export A=1\n");
+    e.h(".zshrc", "export A=1\n");
+    let rep = e.run(&e.args(&[]));
+    let chez = fs::canonicalize(e.home().join(".local/share/chezmoi")).unwrap();
+    assert_eq!(rep.dotfiles.as_deref(), Some(chez.as_path()));
+    let zshrc = rep
+        .units
+        .iter()
+        .find(|u| u.path == rep.home.join(".zshrc"))
+        .unwrap();
+    assert_eq!(zshrc.tracking, Tracking::Tracked);
+    // The source dir itself is not reported as home content.
+    assert!(rep
+        .units
+        .iter()
+        .all(|u| u.findings.is_empty() && !u.path.starts_with(&chez)));
+}
+
+#[test]
+fn exit_zero_when_only_untracked_config() {
+    let e = Env::new();
+    e.h(".config/herdr/config.toml", "theme = 1\n");
+    e.bin().assert().code(0);
+    e.bin().args(["--fail-on", "untracked"]).assert().code(1);
+}
+
+#[test]
+fn exit_one_with_untracked_secret() {
+    let e = Env::new();
+    e.h(
+        ".config/ngrok/ngrok.yml",
+        &format!("authtoken: {NGROK_VALUE}\n"),
+    );
+    e.bin().assert().code(1);
+    e.bin().args(["--fail-on", "untracked"]).assert().code(1);
+}
+
+#[test]
+fn exit_one_with_drift_and_json_output() {
+    let e = Env::new();
+    e.d("zsh/.zshrc", "export A=1\n");
+    e.h(".zshrc", "export A=2\n");
+    let out = e
+        .bin()
+        .arg("--dotfiles")
+        .arg(e.dots())
+        .arg("--json")
+        .output()
+        .unwrap();
+    assert_eq!(out.status.code(), Some(1));
+    let v: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
+    assert_eq!(v["schema_version"], 1);
+}
+
+#[test]
+fn non_tty_output_has_no_color_codes() {
+    let e = rich();
+    let out = e.bin().arg("--dotfiles").arg(e.dots()).output().unwrap();
+    assert!(!String::from_utf8_lossy(&out.stdout).contains('\u{1b}'));
+    let rep = e.run(&e.with_dots(&[]));
+    assert!(render_human(&rep, true, false).contains('\u{1b}'));
+}

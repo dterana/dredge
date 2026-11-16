@@ -1,0 +1,23 @@
+---
+source: tests/report.rs
+expression: out
+---
+COMMITTED SECRETS
+  (none)
+
+UNTRACKED SECRETS
+  (none)
+
+UNTRACKED CONFIG
+  (none)
+
+TRACKED, DRIFTED
+  (none)
+
+UNKNOWN (0)
+  (none)
+
+COULD NOT READ
+  (none)
+
+IGNORED  0 cache/state items, 0 ignored by .dredgeignore

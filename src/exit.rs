@@ -12,7 +12,7 @@ pub fn code(report: &Report, fail_on: &[FailOn]) -> i32 {
         FailOn::Drift => report
             .units
             .iter()
-            .any(|u| u.tracking == Tracking::TrackedDrifted),
+            .any(|u| u.tracking == Tracking::TrackedDrifted || !u.drifted.is_empty()),
         FailOn::Untracked => report.units.iter().any(|u| {
             !u.ignored && matches!(u.tracking, Tracking::Untracked | Tracking::PartiallyTracked)
         }),

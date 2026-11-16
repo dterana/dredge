@@ -19,6 +19,8 @@ fn unit(path: &str, tracking: Tracking, findings: Vec<Finding>) -> Unit {
         tracking,
         findings,
         ignored: false,
+        symlink: false,
+        drifted: Vec::new(),
     }
 }
 

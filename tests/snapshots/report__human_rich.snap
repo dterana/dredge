@@ -1,0 +1,29 @@
+---
+source: tests/report.rs
+expression: out
+---
+COMMITTED SECRETS
+  dots/shell/.envrc                                           SECRET  rule: github-token, line 1
+
+UNTRACKED SECRETS
+  ngrok          ~/.config/ngrok/ngrok.yml                    SECRET  rule: ngrok-authtoken, line 1
+
+UNTRACKED CONFIG
+  herdr          ~/.config/herdr
+  ngrok          ~/.config/ngrok                              SECRET
+
+TRACKED, DRIFTED
+  zsh            ~/.zshrc                                     differs from dots/zsh/.zshrc
+
+UNKNOWN (1)
+  -              ~/.config/mystery
+
+COULD NOT READ
+  (none)
+
+IGNORED  2 cache/state items, 0 ignored by .dredgeignore
+
+IN REPO, MISSING ON THIS MACHINE
+  ~/.envrc
+  ~/.vimrc
+  ~/local.env
