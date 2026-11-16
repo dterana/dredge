@@ -1,5 +1,3 @@
-#![allow(dead_code)]
-
 //! Safe bounded walker. Read-only: never follows symlinks, never opens
 //! anything that is not a regular file or a directory.
 

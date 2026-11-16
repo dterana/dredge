@@ -1,5 +1,3 @@
-#![allow(dead_code)]
-
 use std::fs::{self, File};
 use std::io::Read;
 use std::os::unix::fs::OpenOptionsExt;
