@@ -36,6 +36,8 @@ pub struct Unit {
     pub kind: Kind,
     pub tracking: Tracking,
     pub findings: Vec<Finding>,
+    /// Matched by `.dredgeignore`. Kept in the report only because it has findings.
+    pub ignored: bool,
 }
 
 #[derive(Debug, Clone, Default)]

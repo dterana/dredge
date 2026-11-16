@@ -1,5 +1,7 @@
 pub mod classify;
 pub mod cli;
+pub mod dredgeignore;
+pub mod exit;
 pub mod layout;
 pub mod model;
 pub mod rules;
