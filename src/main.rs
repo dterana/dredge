@@ -1,14 +1,9 @@
-mod cli;
-mod classify;
-mod model;
-mod rules;
-mod scan;
-
 use std::process::ExitCode;
 
 use clap::Parser;
 
-use cli::{Cli, Command};
+use dredge::cli::{Cli, Command};
+use dredge::scan;
 
 fn main() -> ExitCode {
     let cli = Cli::parse();
