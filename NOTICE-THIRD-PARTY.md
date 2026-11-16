@@ -2,7 +2,7 @@
 
 ## Gitleaks
 
-Seven secret detection patterns in `rules/secrets.toml` (those with `source = "gitleaks"`) are converted from the default configuration of gitleaks, https://github.com/gitleaks/gitleaks (`config/gitleaks.toml`). The conversion changed syntax only (Go regular expression escapes such as `\w` and `\d` replaced by explicit ASCII classes, and the surrounding capture group and non-capturing terminator removed). The patterns are:
+Seven secret detection patterns in `rules/secrets.toml` (those with `source = "gitleaks"`) are converted from the default configuration of gitleaks, https://github.com/gitleaks/gitleaks (`config/gitleaks.toml`). The patterns are verbatim apart from two syntax changes for the Rust `regex` crate: `\w` was replaced by the explicit class `[A-Za-z0-9_]` and `\d` by `[0-9]` (the latter only in the Slack app token). The patterns are:
 
 - `github-fine-grained-pat` (gitleaks id `github-fine-grained-pat`)
 - `gitlab-pat` (gitleaks id `gitlab-pat`)

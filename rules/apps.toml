@@ -259,8 +259,14 @@ description = "kubectl discovery and HTTP caches"
 [[rule]]
 app = "azure"
 kind = "config"
-globs = [".azure/**"]
-description = "Azure CLI configuration"
+globs = [".azure/config", ".azure/azureProfile.json"]
+description = "Azure CLI settings and subscription profile"
+
+[[rule]]
+app = "azure"
+kind = "state"
+globs = [".azure/logs/**", ".azure/telemetry/**", ".azure/commands/**"]
+description = "Azure CLI logs, telemetry and command history"
 
 [[rule]]
 app = "docker"
@@ -323,12 +329,6 @@ globs = [".config/pnpm/**"]
 description = "pnpm configuration"
 
 [[rule]]
-app = "pnpm"
-kind = "cache"
-globs = ["Library/pnpm/store/**"]
-description = "pnpm content-addressable store"
-
-[[rule]]
 app = "cargo"
 kind = "config"
 globs = [".cargo/config.toml", ".cargo/config", ".cargo/credentials.toml", ".cargo/credentials"]
@@ -377,12 +377,6 @@ globs = [".config/go/env", "Library/Application Support/go/env"]
 description = "Go toolchain environment settings"
 
 [[rule]]
-app = "go"
-kind = "cache"
-globs = ["go/pkg/mod/**"]
-description = "Go module cache"
-
-[[rule]]
 app = "volta"
 kind = "config"
 globs = [".volta/hooks.json"]
@@ -403,7 +397,7 @@ description = "mise configuration"
 [[rule]]
 app = "homebrew"
 kind = "config"
-globs = ["Brewfile", ".config/homebrew/**"]
+globs = [".config/homebrew/**"]
 description = "Homebrew bundle and environment configuration"
 
 [[rule]]

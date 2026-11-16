@@ -105,7 +105,7 @@ The dialect is deliberately small:
 
 Stow: packages are the top level directories of the dotfiles repository that do not start with a dot, and their contents are compared with the live files.
 
-chezmoi: source names are mapped to target paths and contents are compared. Supported attributes are `dot_`, `private_`, `executable_`, `readonly_`, `symlink_` and the `.tmpl` suffix. Templates (`.tmpl`) are reported as tracked without drift comparison. The attributes `exact_`, `create_`, `modify_`, `run_` and `encrypted_` are reported as `tracked (unverified)` (script style `run_`, `modify_` and `create_` files have no sensible target and are skipped).
+chezmoi: source names are mapped to target paths and contents are compared. Source entries whose names start with a dot (such as `.git`) are ignored, and `.chezmoiroot` is honored when it names a plain subdirectory. The attributes `dot_`, `private_`, `executable_` and `readonly_` are fully supported. Files with the `.tmpl` suffix are reported as tracked without drift comparison. Entries using `symlink_`, `exact_` or `encrypted_` are reported as `tracked (unverified)`, and so is everything inside a directory marked `exact_`, `symlink_`, `encrypted_`, `create_`, `modify_` or `run_`. Files using `run_`, `modify_` or `create_` are skipped entirely, since they are scripts or templates with no sensible target.
 
 ## Contributing an app rule
 
