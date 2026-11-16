@@ -21,7 +21,7 @@ pub enum Tracking {
 }
 
 /// A secret finding. Deliberately has no field that can hold the secret value.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
 pub struct Finding {
     pub rule_id: String,
     pub path: PathBuf,

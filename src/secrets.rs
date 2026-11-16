@@ -1,0 +1,107 @@
+#![allow(dead_code)]
+
+use std::fs::{self, File};
+use std::io::Read;
+use std::path::Path;
+
+use regex::bytes::{Regex, RegexSet};
+use serde::Deserialize;
+
+use crate::model::Finding;
+
+const EMBEDDED: &str = include_str!("../rules/secrets.toml");
+
+pub const MAX_SCAN_BYTES: u64 = 1_048_576;
+
+#[derive(Debug, Deserialize)]
+struct RawRule {
+    id: String,
+    regex: String,
+    enabled: bool,
+    #[allow(dead_code)]
+    source: String,
+}
+
+#[derive(Debug, Deserialize)]
+struct RawFile {
+    #[serde(default)]
+    rule: Vec<RawRule>,
+}
+
+#[derive(Debug, Default)]
+pub struct SecretRules {
+    ids: Vec<String>,
+    regexes: Vec<Regex>,
+    set: Option<RegexSet>,
+}
+
+impl SecretRules {
+    /// Parses the embedded rules. Falls back to empty rules on error;
+    /// a test asserts the embedded file parses.
+    pub fn embedded() -> SecretRules {
+        SecretRules::parse(EMBEDDED).unwrap_or_default()
+    }
+
+    pub fn parse(text: &str) -> Result<SecretRules, String> {
+        let raw: RawFile = toml::from_str(text).map_err(|e| e.to_string())?;
+        let mut ids = Vec::new();
+        let mut regexes = Vec::new();
+        let mut patterns = Vec::new();
+        for r in raw.rule.into_iter().filter(|r| r.enabled) {
+            let re = Regex::new(&r.regex).map_err(|e| format!("rule {}: {e}", r.id))?;
+            ids.push(r.id);
+            patterns.push(r.regex);
+            regexes.push(re);
+        }
+        let set = if patterns.is_empty() {
+            None
+        } else {
+            Some(RegexSet::new(&patterns).map_err(|e| e.to_string())?)
+        };
+        Ok(SecretRules { ids, regexes, set })
+    }
+
+    pub fn len(&self) -> usize {
+        self.ids.len()
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.ids.is_empty()
+    }
+}
+
+/// Scans one file. Findings carry only rule id, path and 1-based line.
+pub fn scan_file(path: &Path, rules: &SecretRules) -> std::io::Result<Vec<Finding>> {
+    let Some(set) = &rules.set else {
+        return Ok(Vec::new());
+    };
+    let meta = fs::symlink_metadata(path)?;
+    if !meta.file_type().is_file() || meta.len() > MAX_SCAN_BYTES {
+        return Ok(Vec::new());
+    }
+    let file = File::open(path)?;
+    // Re-check on the opened handle in case the path changed after the first check.
+    if !file.metadata()?.is_file() {
+        return Ok(Vec::new());
+    }
+    let mut buf = Vec::new();
+    file.take(MAX_SCAN_BYTES + 1).read_to_end(&mut buf)?;
+    if buf.len() as u64 > MAX_SCAN_BYTES || buf.contains(&0) {
+        return Ok(Vec::new());
+    }
+
+    let mut findings = Vec::new();
+    for (idx, line) in buf.split(|&b| b == b'\n').enumerate() {
+        for rule_idx in set.matches(line).iter() {
+            for _ in rules.regexes[rule_idx].find_iter(line) {
+                findings.push(Finding {
+                    rule_id: rules.ids[rule_idx].clone(),
+                    path: path.to_path_buf(),
+                    line: idx + 1,
+                    committed: false,
+                });
+            }
+        }
+    }
+    Ok(findings)
+}
