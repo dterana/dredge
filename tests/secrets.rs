@@ -90,8 +90,52 @@ fn single_900kb_line_scans_in_under_one_second() {
     let rules = SecretRules::embedded();
     let start = Instant::now();
     let found = scan_file(&p, &rules).unwrap();
-    assert!(start.elapsed().as_secs_f64() < 1.0);
+    let t = start.elapsed().as_secs_f64();
+    eprintln!("ascii 900kb: {t:.3}s");
+    assert!(t < 1.0);
     assert!(found.is_empty());
+}
+
+#[test]
+fn non_ascii_900kb_line_scans_in_under_one_second() {
+    let fx = Fixture::new();
+    let p = fx.root().join("uni");
+    fs::write(&p, "é".repeat(450_000)).unwrap();
+    let rules = SecretRules::embedded();
+    let start = Instant::now();
+    let found = scan_file(&p, &rules).unwrap();
+    let t = start.elapsed().as_secs_f64();
+    eprintln!("non-ascii 900kb: {t:.3}s");
+    assert!(t < 1.0);
+    assert!(found.is_empty());
+}
+
+#[test]
+fn many_matches_on_900kb_line_scan_in_under_one_second() {
+    let fx = Fixture::new();
+    let p = fx.root().join("many");
+    // 21 bytes per key plus separator: 40_000 keys is about 880 KB.
+    fs::write(&p, "AKIAABCDEFGHIJKLMNOP ".repeat(40_000)).unwrap();
+    let rules = SecretRules::embedded();
+    let start = Instant::now();
+    let found = scan_file(&p, &rules).unwrap();
+    let t = start.elapsed().as_secs_f64();
+    eprintln!("many matches: {t:.3}s");
+    assert!(t < 1.0);
+    assert_eq!(found.len(), 40_000);
+    assert!(found.iter().all(|f| f.line == 1));
+}
+
+#[test]
+fn open_regular_refuses_symlink_and_fifo_without_blocking() {
+    let fx = Fixture::new();
+    let target = fx.root().join("real");
+    fs::write(&target, "x").unwrap();
+    let link = fx.symlink("link", &target);
+    let fifo = fx.fifo("pipe");
+    assert!(dredge::secrets::open_regular(&link).unwrap().is_none());
+    assert!(dredge::secrets::open_regular(&fifo).unwrap().is_none());
+    assert!(dredge::secrets::open_regular(&target).unwrap().is_some());
 }
 
 #[test]

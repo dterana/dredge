@@ -165,6 +165,7 @@ dependencies = [
  "assert_cmd",
  "clap",
  "globset",
+ "libc",
  "regex",
  "serde",
  "serde_json",

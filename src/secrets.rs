@@ -2,6 +2,7 @@
 
 use std::fs::{self, File};
 use std::io::Read;
+use std::os::unix::fs::OpenOptionsExt;
 use std::path::Path;
 
 use regex::bytes::{Regex, RegexSet};
@@ -70,6 +71,27 @@ impl SecretRules {
     }
 }
 
+/// Opens without following symlinks and without blocking on FIFOs, then checks
+/// the opened handle is a regular file. Returns None for anything else,
+/// including a path swapped to a symlink or FIFO after the metadata check.
+pub fn open_regular(path: &Path) -> std::io::Result<Option<File>> {
+    let file = match fs::OpenOptions::new()
+        .read(true)
+        .custom_flags(libc::O_NOFOLLOW | libc::O_NONBLOCK)
+        .open(path)
+    {
+        Ok(f) => f,
+        Err(e) if matches!(e.raw_os_error(), Some(libc::ELOOP) | Some(libc::ENXIO)) => {
+            return Ok(None)
+        }
+        Err(e) => return Err(e),
+    };
+    if !file.metadata()?.is_file() {
+        return Ok(None);
+    }
+    Ok(Some(file))
+}
+
 /// Scans one file. Findings carry only rule id, path and 1-based line.
 pub fn scan_file(path: &Path, rules: &SecretRules) -> std::io::Result<Vec<Finding>> {
     let Some(set) = &rules.set else {
@@ -79,11 +101,9 @@ pub fn scan_file(path: &Path, rules: &SecretRules) -> std::io::Result<Vec<Findin
     if !meta.file_type().is_file() || meta.len() > MAX_SCAN_BYTES {
         return Ok(Vec::new());
     }
-    let file = File::open(path)?;
-    // Re-check on the opened handle in case the path changed after the first check.
-    if !file.metadata()?.is_file() {
+    let Some(file) = open_regular(path)? else {
         return Ok(Vec::new());
-    }
+    };
     let mut buf = Vec::new();
     file.take(MAX_SCAN_BYTES + 1).read_to_end(&mut buf)?;
     if buf.len() as u64 > MAX_SCAN_BYTES || buf.contains(&0) {
