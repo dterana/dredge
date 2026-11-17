@@ -204,7 +204,7 @@ fn fifo_dredgeignore_does_not_hang() {
 #[test]
 fn oversized_dredgeignore_is_treated_as_empty() {
     let mut contents = b".config/foo\n".to_vec();
-    contents.extend(std::iter::repeat(b'#').take(70 * 1024));
+    contents.extend(std::iter::repeat_n(b'#', 70 * 1024));
     let (_fx, list) = list_from(&contents);
     assert!(!list.is_ignored(Path::new(".config/foo")));
 }
