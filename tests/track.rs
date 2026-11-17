@@ -447,3 +447,41 @@ fn decide_resolves_a_non_canonical_dotfiles_path() {
         Tracking::Tracked
     );
 }
+
+#[test]
+fn stow_control_files_at_a_package_top_are_not_indexed() {
+    let f = Fixture::new();
+    let repo = f.dir("dotfiles");
+    write(&repo.join("karabiner/.stow-local-ignore"), "README.*\n");
+    write(&repo.join("karabiner/.stow-global-ignore"), "x\n");
+    write(
+        &repo.join("karabiner/.config/karabiner/karabiner.json"),
+        "{}",
+    );
+    // Deeper inside a package it is an ordinary file that stow links.
+    write(&repo.join("karabiner/.config/x/.stow-local-ignore"), "y\n");
+    write(&repo.join("zsh/.zshrc"), "a");
+    let index = Index::build(&repo, Layout::Stow).unwrap();
+    assert!(index.lookup(Path::new(".stow-local-ignore")).is_none());
+    assert!(index.lookup(Path::new(".stow-global-ignore")).is_none());
+    assert!(index
+        .lookup(Path::new(".config/x/.stow-local-ignore"))
+        .is_some());
+    assert_eq!(index.entries().count(), 3);
+    let home = f.dir("home");
+    let missing = missing_on_machine(&index, &home);
+    assert_eq!(
+        missing,
+        vec![
+            PathBuf::from(".config/karabiner/karabiner.json"),
+            PathBuf::from(".config/x/.stow-local-ignore"),
+            PathBuf::from(".zshrc"),
+        ]
+    );
+    // The chezmoi layout is unaffected: a source mapping to that name is
+    // an ordinary target.
+    let cz = f.dir("cz");
+    write(&cz.join("dot_stow-local-ignore"), "z\n");
+    let index = Index::build(&cz, Layout::Chezmoi).unwrap();
+    assert!(index.lookup(Path::new(".stow-local-ignore")).is_some());
+}

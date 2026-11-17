@@ -69,6 +69,10 @@ fn sub_children(
     })
 }
 
+/// Stow control files: at the top of a package stow reads them and never
+/// links them, so they are not targets.
+const STOW_CONTROL_FILES: &[&str] = &[".stow-local-ignore", ".stow-global-ignore"];
+
 /// Walk a stow package, mapping paths relative to the package root.
 fn walk_stow(
     dir: &Path,
@@ -84,6 +88,9 @@ fn walk_stow(
         if ft.is_dir() {
             walk_stow(&path, &child_rel, entries, unreadable);
         } else if ft.is_file() {
+            if rel.as_os_str().is_empty() && STOW_CONTROL_FILES.contains(&name.as_str()) {
+                continue;
+            }
             entries.entry(child_rel).or_insert(RepoEntry {
                 repo_path: path,
                 unverified: false,
