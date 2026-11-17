@@ -18,7 +18,7 @@ use crate::model::{Drift, Finding, Kind, Report, Tracking, Unit};
 use crate::progress::Progress;
 use crate::rules::Rules;
 use crate::secrets::{scan_file, scan_file_detailed, SecretRules, SkipReason};
-use crate::track;
+use crate::track::{self, Source};
 use crate::walk::{self, display_lossy, Root, SkippedRoot, UnitFiles, WalkOptions};
 
 /// Depth cap for the committed-secrets walk of the dotfiles working tree.
@@ -42,8 +42,8 @@ const PROGRESS_POLL: Duration = Duration::from_millis(100);
 
 struct Ctx<'a> {
     home: &'a Path,
-    dotfiles: Option<&'a Path>,
-    index: &'a Index,
+    /// Every dotfiles directory with its index, in the order given.
+    sources: &'a [Source],
     rules: Rules,
     secrets: SecretRules,
 }
@@ -75,14 +75,20 @@ fn run_inner(args: &ScanArgs, progress: &mut Progress) -> Result<Report> {
     let home = resolve_home(args.home.as_deref())?;
     let (dotfiles, layout_arg) = resolve_dotfiles(args, &home)?;
 
-    let (index, ignore) = match &dotfiles {
-        Some(d) => {
-            let layout = layout::detect(d, layout_arg);
-            let index = Index::build(d, layout)
-                .with_context(|| format!("cannot read dotfiles directory {}", display_lossy(d)))?;
-            (index, IgnoreList::load(d))
-        }
-        None => (Index::default(), IgnoreList::default()),
+    // Each directory gets its own layout detection and its own index.
+    let mut sources = Vec::with_capacity(dotfiles.len());
+    for d in &dotfiles {
+        let layout = layout::detect(d, layout_arg);
+        let index = Index::build(d, layout)
+            .with_context(|| format!("cannot read dotfiles directory {}", display_lossy(d)))?;
+        sources.push(Source {
+            dir: d.clone(),
+            index,
+        });
+    }
+    let ignore = match dotfiles.first() {
+        Some(d) => IgnoreList::load(d),
+        None => IgnoreList::default(),
     };
 
     let mut roots = walk::default_roots(&home);
@@ -106,17 +112,20 @@ fn run_inner(args: &ScanArgs, progress: &mut Progress) -> Result<Report> {
     })?;
     let notes: Vec<String> = walked.skipped.iter().map(skip_note).collect();
 
-    // The dotfiles dir is compared against, never reported as home content.
-    if let Some(d) = dotfiles.as_deref().filter(|d| *d != home.as_path()) {
-        walked.units.retain(|u| !u.path.starts_with(d));
+    // Dotfiles dirs are compared against, never reported as home content.
+    let inside_dotfiles = |p: &Path| excluded.iter().any(|d| p.starts_with(d));
+    if !excluded.is_empty() {
+        walked.units.retain(|u| !inside_dotfiles(&u.path));
         for u in &mut walked.units {
-            u.files.retain(|f| !f.starts_with(d));
+            u.files.retain(|f| !inside_dotfiles(f));
         }
-        walked.symlinks.retain(|s| !s.starts_with(d));
+        walked.symlinks.retain(|s| !inside_dotfiles(s));
     }
 
     let mut unreadable = walked.unreadable;
-    unreadable.extend(index.unreadable().iter().cloned());
+    for s in &sources {
+        unreadable.extend(s.index.unreadable().iter().cloned());
+    }
 
     // Attribute nested symlinks to the unit whose walk found them: the deepest
     // unit that contains the link with no pruned directory in between (a link
@@ -151,8 +160,7 @@ fn run_inner(args: &ScanArgs, progress: &mut Progress) -> Result<Report> {
 
     let ctx = Ctx {
         home: &home,
-        dotfiles: dotfiles.as_deref(),
-        index: &index,
+        sources: &sources,
         rules,
         secrets: SecretRules::embedded(),
     };
@@ -182,13 +190,19 @@ fn run_inner(args: &ScanArgs, progress: &mut Progress) -> Result<Report> {
     }
     units.sort_by(|a, b| a.path.cmp(&b.path));
 
-    let mut committed_findings = match &dotfiles {
-        Some(d) => scan_committed(d, &ctx.secrets, &mut unreadable, progress, &mut files_done),
-        None => Vec::new(),
-    };
+    let mut committed_findings = Vec::new();
+    for d in &dotfiles {
+        committed_findings.extend(scan_committed(
+            d,
+            &ctx.secrets,
+            &mut unreadable,
+            progress,
+            &mut files_done,
+        ));
+    }
     committed_findings.sort_by(|a, b| (&a.path, a.line).cmp(&(&b.path, b.line)));
 
-    let missing_on_machine = track::missing_on_machine(&index, &home);
+    let missing_on_machine = track::missing_on_machine_all(&sources, &home);
 
     unreadable.sort();
     unreadable.dedup();
@@ -433,21 +447,28 @@ fn resolve_home(arg: Option<&Path>) -> Result<PathBuf> {
     }
 }
 
-/// `--dotfiles` must be an existing directory. Without it, only chezmoi's
-/// default source dir is auto-detected (and read with the chezmoi layout when
-/// the layout is `auto`); otherwise there is no tracking info.
-fn resolve_dotfiles(args: &ScanArgs, home: &Path) -> Result<(Option<PathBuf>, LayoutArg)> {
-    if let Some(d) = &args.dotfiles {
-        let is_dir = fs::metadata(d).map(|m| m.is_dir()).unwrap_or(false);
-        if !is_dir {
-            bail!(
-                "--dotfiles {} is not an existing directory",
-                display_lossy(d)
-            );
+/// Every `--dotfiles` must be an existing directory; they are canonicalized
+/// and deduplicated, keeping the first occurrence of each. Without any, only
+/// chezmoi's default source dir is auto-detected (and read with the chezmoi
+/// layout when the layout is `auto`); otherwise there is no tracking info.
+fn resolve_dotfiles(args: &ScanArgs, home: &Path) -> Result<(Vec<PathBuf>, LayoutArg)> {
+    if !args.dotfiles.is_empty() {
+        let mut dirs: Vec<PathBuf> = Vec::with_capacity(args.dotfiles.len());
+        for d in &args.dotfiles {
+            let is_dir = fs::metadata(d).map(|m| m.is_dir()).unwrap_or(false);
+            if !is_dir {
+                bail!(
+                    "--dotfiles {} is not an existing directory",
+                    display_lossy(d)
+                );
+            }
+            let canon = fs::canonicalize(d)
+                .with_context(|| format!("--dotfiles {} cannot be resolved", display_lossy(d)))?;
+            if !dirs.contains(&canon) {
+                dirs.push(canon);
+            }
         }
-        let canon = fs::canonicalize(d)
-            .with_context(|| format!("--dotfiles {} cannot be resolved", display_lossy(d)))?;
-        return Ok((Some(canon), args.layout));
+        return Ok((dirs, args.layout));
     }
     let chezmoi = home.join(CHEZMOI_DEFAULT);
     let is_dir = fs::metadata(&chezmoi).map(|m| m.is_dir()).unwrap_or(false);
@@ -457,9 +478,9 @@ fn resolve_dotfiles(args: &ScanArgs, home: &Path) -> Result<(Option<PathBuf>, La
                 LayoutArg::Auto => LayoutArg::Chezmoi,
                 other => other,
             };
-            Ok((Some(canon), layout))
+            Ok((vec![canon], layout))
         }
-        _ => Ok((None, args.layout)),
+        _ => Ok((Vec::new(), args.layout)),
     }
 }
 
@@ -482,10 +503,10 @@ fn tracks(kind: Kind) -> bool {
 }
 
 fn decide(ctx: &Ctx, path: &Path, rel: &Path) -> Tracking {
-    match ctx.dotfiles {
-        Some(d) => track::decide(path, rel, d, ctx.index),
-        None => Tracking::Untracked,
+    if ctx.sources.is_empty() {
+        return Tracking::Untracked;
     }
+    track::decide_all(path, rel, ctx.sources)
 }
 
 /// A regular file: classify, decide tracking and drift, scan for secrets.
@@ -510,7 +531,7 @@ fn file_entry(
     }
     let tracking = decide(ctx, path, &rel);
     if tracking == Tracking::TrackedDrifted {
-        if let Some(repo) = ctx.index.lookup(&rel) {
+        if let Some(repo) = track::lookup_first(ctx.sources, &rel) {
             entry.drift = Some(Drift {
                 path: path.to_path_buf(),
                 repo_path: repo.repo_path,
@@ -534,7 +555,7 @@ fn file_entry(
 }
 
 /// A symlink is never read or followed; it is tracked only if it resolves
-/// into the dotfiles dir.
+/// into a dotfiles dir.
 fn link_entry(ctx: &Ctx, unit: &Path, path: &Path) -> Entry {
     let rel = home_rel(ctx.home, path);
     let in_unit = unit_rel(unit, path);

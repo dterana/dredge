@@ -36,9 +36,10 @@ pub enum LayoutArg {
 
 #[derive(Debug, Args)]
 pub struct ScanArgs {
-    /// Path to the dotfiles repository
+    /// Path to a dotfiles directory (repeatable; an earlier one wins when two
+    /// define the same file)
     #[arg(long)]
-    pub dotfiles: Option<PathBuf>,
+    pub dotfiles: Vec<PathBuf>,
 
     /// Extra root directory to scan (repeatable)
     #[arg(long)]

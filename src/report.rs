@@ -23,8 +23,9 @@ pub const UNKNOWN_CAP: usize = 20;
 const APP_W: usize = 14;
 const PATH_W: usize = 44;
 
-/// Display a path: `~/...` under home, `<repo dir name>/...` under the
-/// dotfiles dir, else absolute. Lossy, for display only.
+/// Display a path: `~/...` under home, `<repo dir name>/...` under a
+/// dotfiles dir (the first listed one that contains it), else absolute.
+/// Lossy, for display only.
 pub fn display_path(report: &Report, p: &Path) -> String {
     if !report.home.as_os_str().is_empty() {
         if let Ok(rel) = p.strip_prefix(&report.home) {
@@ -34,7 +35,7 @@ pub fn display_path(report: &Report, p: &Path) -> String {
             return format!("~/{}", rel.to_string_lossy());
         }
     }
-    if let Some(d) = &report.dotfiles {
+    for d in &report.dotfiles {
         if let Ok(rel) = p.strip_prefix(d) {
             let name = d
                 .file_name()
@@ -394,7 +395,7 @@ pub fn render_json(report: &Report) -> String {
     let value = json!({
         "schema_version": 1,
         "home": lossy(&report.home),
-        "dotfiles": report.dotfiles.as_deref().map(lossy),
+        "dotfiles": report.dotfiles.iter().map(|d| lossy(d)).collect::<Vec<_>>(),
         "committed_secrets": report.committed_findings.iter().map(finding_json).collect::<Vec<_>>(),
         "units": units,
         "unreadable": report.unreadable.iter().map(|p| lossy(p)).collect::<Vec<_>>(),

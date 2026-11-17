@@ -12,7 +12,9 @@ expression: normalized
     }
   ],
   "depth_truncated_dirs": 0,
-  "dotfiles": "<DOTS>",
+  "dotfiles": [
+    "<DOTS>"
+  ],
   "home": "<HOME>",
   "ignored": {
     "cache_state_items": 1,

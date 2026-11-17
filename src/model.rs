@@ -77,8 +77,9 @@ pub struct Unit {
 pub struct Report {
     /// Canonical home directory; used to display paths as `~/...`.
     pub home: PathBuf,
-    /// Canonical dotfiles directory, if one was given or detected.
-    pub dotfiles: Option<PathBuf>,
+    /// Canonical dotfiles directories, in the order given (deduplicated), or
+    /// the detected chezmoi source dir. Empty when there is none.
+    pub dotfiles: Vec<PathBuf>,
     pub units: Vec<Unit>,
     pub unreadable: Vec<PathBuf>,
     pub ignored_by_file: usize,

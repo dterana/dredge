@@ -183,10 +183,9 @@ fn json_has_schema_version_and_same_findings() {
         .iter()
         .all(|m| Path::new(m.as_str().unwrap()).is_absolute()));
     let home = rep.home.to_string_lossy().into_owned();
-    let normalized = render_json(&rep).replace(&home, "<HOME>").replace(
-        &rep.dotfiles.clone().unwrap().to_string_lossy().into_owned(),
-        "<DOTS>",
-    );
+    let normalized = render_json(&rep)
+        .replace(&home, "<HOME>")
+        .replace(&rep.dotfiles[0].to_string_lossy().into_owned(), "<DOTS>");
     insta::assert_snapshot!("json_rich", normalized);
 }
 
@@ -268,7 +267,7 @@ fn output_never_contains_seeded_secret_value() {
 fn clean_machine_prints_all_none_sections() {
     let e = Env::new();
     let rep = e.run(&e.args(&[]));
-    assert!(rep.dotfiles.is_none());
+    assert!(rep.dotfiles.is_empty());
     let out = render_human(&rep, false, false);
     assert_order(&out, HUMAN_SECTIONS);
     assert!(!out.contains("MISSING ON THIS MACHINE"), "{out}");
@@ -487,7 +486,7 @@ fn chezmoi_default_source_dir_is_auto_detected() {
     e.h(".zshrc", "export A=1\n");
     let rep = e.run(&e.args(&[]));
     let chez = fs::canonicalize(e.home().join(".local/share/chezmoi")).unwrap();
-    assert_eq!(rep.dotfiles.as_deref(), Some(chez.as_path()));
+    assert_eq!(rep.dotfiles, vec![chez.clone()]);
     let zshrc = rep
         .units
         .iter()
