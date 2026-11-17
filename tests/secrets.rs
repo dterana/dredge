@@ -158,3 +158,72 @@ fn multiple_matches_one_line_and_repeats_report_each_with_correct_lines() {
         ]
     );
 }
+
+/// Counts the bytes handed out, over an endless stream of one byte value.
+struct CountingReader {
+    byte: u8,
+    served: usize,
+}
+
+impl std::io::Read for CountingReader {
+    fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
+        buf.fill(self.byte);
+        self.served += buf.len();
+        Ok(buf.len())
+    }
+}
+
+#[test]
+fn probe_reads_at_most_8192_bytes_and_stops_on_nul() {
+    let mut r = CountingReader { byte: 0, served: 0 };
+    let (binary, chunk) = dredge::secrets::probe_is_binary(&mut r).unwrap();
+    assert!(binary);
+    assert!(chunk.len() <= dredge::secrets::BINARY_PROBE_BYTES);
+    assert!(r.served <= dredge::secrets::BINARY_PROBE_BYTES);
+}
+
+#[test]
+fn probe_reports_text_chunk_without_nul() {
+    let mut r = CountingReader {
+        byte: b'a',
+        served: 0,
+    };
+    let (binary, chunk) = dredge::secrets::probe_is_binary(&mut r).unwrap();
+    assert!(!binary);
+    assert_eq!(chunk.len(), dredge::secrets::BINARY_PROBE_BYTES);
+    assert_eq!(r.served, dredge::secrets::BINARY_PROBE_BYTES);
+}
+
+#[test]
+fn nul_in_first_chunk_hides_a_later_secret() {
+    let fx = Fixture::new();
+    let p = fx.root().join("bin");
+    let mut data = vec![0u8];
+    data.extend_from_slice(format!("authtoken: {FAKE}\n").as_bytes());
+    fs::write(&p, data).unwrap();
+    assert!(scan_file(&p, &SecretRules::embedded()).unwrap().is_empty());
+}
+
+#[test]
+fn first_nul_after_probe_but_under_cap_is_still_skipped() {
+    let fx = Fixture::new();
+    let p = fx.root().join("late-nul");
+    let mut data = format!("authtoken: {FAKE}\n").into_bytes();
+    data.resize(20_000, b'a');
+    data.push(0);
+    fs::write(&p, data).unwrap();
+    assert!(scan_file(&p, &SecretRules::embedded()).unwrap().is_empty());
+}
+
+#[test]
+fn secret_after_probe_window_in_text_file_is_found() {
+    let fx = Fixture::new();
+    let p = fx.root().join("late-secret");
+    let mut data = vec![b'a'; 20_000];
+    data.push(b'\n');
+    data.extend_from_slice(format!("authtoken: {FAKE}\n").as_bytes());
+    fs::write(&p, data).unwrap();
+    let found = scan_file(&p, &SecretRules::embedded()).unwrap();
+    assert_eq!(found.len(), 1);
+    assert_eq!(found[0].line, 2);
+}

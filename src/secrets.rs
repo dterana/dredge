@@ -1,5 +1,5 @@
 use std::fs::{self, File};
-use std::io::Read;
+use std::io::{self, Read};
 use std::os::unix::fs::OpenOptionsExt;
 use std::path::Path;
 
@@ -11,6 +11,10 @@ use crate::model::Finding;
 const EMBEDDED: &str = include_str!("../rules/secrets.toml");
 
 pub const MAX_SCAN_BYTES: u64 = 1_048_576;
+
+/// How much of a file is read before deciding whether it is binary. Most
+/// large files in dot directories are binary, so this avoids reading them whole.
+pub const BINARY_PROBE_BYTES: usize = 8192;
 
 /// One secret rule as written in the rules file, including disabled rules.
 #[derive(Debug, Deserialize)]
@@ -96,6 +100,15 @@ pub fn open_regular(path: &Path) -> std::io::Result<Option<File>> {
     Ok(Some(file))
 }
 
+/// Reads at most `BINARY_PROBE_BYTES` from `r`. Returns whether the chunk
+/// contains a NUL byte, and the chunk itself.
+pub fn probe_is_binary<R: Read>(r: &mut R) -> io::Result<(bool, Vec<u8>)> {
+    let mut chunk = Vec::new();
+    r.take(BINARY_PROBE_BYTES as u64).read_to_end(&mut chunk)?;
+    let binary = chunk.contains(&0);
+    Ok((binary, chunk))
+}
+
 /// Scans one file. Findings carry only rule id, path and 1-based line.
 pub fn scan_file(path: &Path, rules: &SecretRules) -> std::io::Result<Vec<Finding>> {
     let Some(set) = &rules.set else {
@@ -108,8 +121,13 @@ pub fn scan_file(path: &Path, rules: &SecretRules) -> std::io::Result<Vec<Findin
     let Some(file) = open_regular(path)? else {
         return Ok(Vec::new());
     };
-    let mut buf = Vec::new();
-    file.take(MAX_SCAN_BYTES + 1).read_to_end(&mut buf)?;
+    let mut file = file;
+    let (binary, mut buf) = probe_is_binary(&mut file)?;
+    if binary {
+        return Ok(Vec::new());
+    }
+    let remaining = (MAX_SCAN_BYTES + 1).saturating_sub(buf.len() as u64);
+    file.take(remaining).read_to_end(&mut buf)?;
     if buf.len() as u64 > MAX_SCAN_BYTES || buf.contains(&0) {
         return Ok(Vec::new());
     }
