@@ -1364,3 +1364,73 @@ fn root_with_an_ancestor_ending_in_cache_is_still_scanned() {
     assert!(u.findings[0].path == secret);
     assert_eq!(rep.pruned_dirs, 0);
 }
+
+// ---- human output: duplicate finding rows collapse ----
+
+#[test]
+fn duplicate_finding_rows_collapse_with_a_count() {
+    let e = Env::new();
+    e.h(
+        ".config/github-copilot/apps.json",
+        &format!("{{\"a\":\"{GH_VALUE}\",\"b\":\"{GH_VALUE}\"}}\n"),
+    );
+    e.h(
+        ".config/three/x.conf",
+        &format!("t={GH_VALUE} u={GH_VALUE} v={GH_VALUE}\n"),
+    );
+    // Same rule and file, different lines: two rows.
+    e.h(
+        ".config/lines/x.conf",
+        &format!("t={GH_VALUE}\nu={GH_VALUE}\n"),
+    );
+    // Different rules on one line: two rows.
+    e.h(
+        ".config/mixed/x.conf",
+        &format!("t={GH_VALUE} k={AWS_VALUE}\n"),
+    );
+    // Committed duplicates collapse too.
+    e.d(
+        "shell/.envrc",
+        &format!("export A={GH_VALUE} B={GH_VALUE}\n"),
+    );
+    let rep = e.run(&e.with_dots(&[]));
+    let out = render_human(&rep, false, false);
+    let rows = |needle: &str| {
+        out.lines()
+            .filter(|l| l.contains(needle))
+            .collect::<Vec<_>>()
+    };
+    let copilot = rows("~/.config/github-copilot/apps.json ");
+    assert_eq!(copilot.len(), 1, "{out}");
+    assert!(
+        copilot[0].ends_with("SECRET  rule: github-token, line 1  (x2)"),
+        "{out}"
+    );
+    let three = rows("~/.config/three/x.conf ");
+    assert_eq!(three.len(), 1, "{out}");
+    assert!(three[0].ends_with("line 1  (x3)"), "{out}");
+    let lines = rows("~/.config/lines/x.conf ");
+    assert_eq!(lines.len(), 2, "{out}");
+    assert!(lines.iter().all(|l| !l.contains("(x")), "{out}");
+    let mixed = rows("~/.config/mixed/x.conf ");
+    assert_eq!(mixed.len(), 2, "{out}");
+    assert!(mixed.iter().all(|l| !l.contains("(x")), "{out}");
+    let committed = rows("dots/shell/.envrc ");
+    assert_eq!(committed.len(), 1, "{out}");
+    assert!(committed[0].ends_with("line 1  (x2)"), "{out}");
+    // The JSON keeps one entry per match.
+    let v: serde_json::Value = serde_json::from_str(&render_json(&rep)).unwrap();
+    let total: usize = v["units"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|u| u["findings"].as_array().unwrap().len())
+        .sum();
+    assert_eq!(total, 2 + 3 + 2 + 2);
+    assert_eq!(v["committed_secrets"].as_array().unwrap().len(), 2);
+    assert_no_secret(&out);
+    // The colored output collapses the same way.
+    let colored = render_human(&rep, true, false);
+    assert_eq!(colored.matches("(x2)").count(), 2);
+    assert_eq!(colored.matches("(x3)").count(), 1);
+}

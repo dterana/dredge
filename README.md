@@ -85,7 +85,7 @@ COULD NOT READ
 IGNORED  1 cache/state items, 0 ignored by .dredgeignore
 ```
 
-Findings name the rule, file and line. Secret values never appear in any output.
+Findings name the rule, file and line. Secret values never appear in any output. When several findings share the same rule, file and line (for example two tokens on one line), the human report prints one row ending in a count such as `(x2)`; the JSON lists every finding.
 
 ## Exit codes
 

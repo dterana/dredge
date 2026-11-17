@@ -126,6 +126,31 @@ fn finding_text(f: &Finding) -> String {
     format!("rule: {}, line {}", f.rule_id, f.line)
 }
 
+/// Findings with the same rule, path and line folded into one row with a
+/// count, in order of first appearance. Human output only.
+fn collapse<'a>(findings: impl IntoIterator<Item = &'a Finding>) -> Vec<(&'a Finding, usize)> {
+    let mut rows: Vec<(&Finding, usize)> = Vec::new();
+    for f in findings {
+        let same = |(g, _): &&mut (&Finding, usize)| {
+            g.rule_id == f.rule_id && g.path == f.path && g.line == f.line
+        };
+        match rows.iter_mut().find(same) {
+            Some(row) => row.1 += 1,
+            None => rows.push((f, 1)),
+        }
+    }
+    rows
+}
+
+/// The `  (xN)` marker for a collapsed row, empty for a single finding.
+fn count_marker(p: &Painter, n: usize) -> String {
+    if n > 1 {
+        p.paint(Tone::Dim, &format!("  (x{n})"))
+    } else {
+        String::new()
+    }
+}
+
 struct Out {
     buf: String,
 }
@@ -159,14 +184,14 @@ pub fn render_human(report: &Report, color: bool, all: bool) -> String {
     };
 
     // COMMITTED SECRETS
-    let lines: Vec<String> = report
-        .committed_findings
-        .iter()
-        .map(|f| {
+    let lines: Vec<String> = collapse(&report.committed_findings)
+        .into_iter()
+        .map(|(f, n)| {
             format!(
-                "  {:<w$} {}",
+                "  {:<w$} {}{}",
                 display_path(report, &f.path),
                 p.paint(Tone::Danger, &format!("SECRET  {}", finding_text(f))),
+                count_marker(&p, n),
                 w = APP_W + 1 + PATH_W
             )
         })
@@ -177,7 +202,7 @@ pub fn render_human(report: &Report, color: bool, all: bool) -> String {
     // tracked unit or a `.dredgeignore`d unit are tagged, never hidden.
     let mut lines = Vec::new();
     for u in &report.units {
-        for f in &u.findings {
+        for (f, n) in collapse(&u.findings) {
             let mut line = format!(
                 "  {} {:<PATH_W$} {}",
                 app_col(u),
@@ -189,6 +214,7 @@ pub fn render_human(report: &Report, color: bool, all: bool) -> String {
             } else if is_tracked(u.tracking) {
                 line.push_str(&p.paint(Tone::Dim, "  (in a tracked unit)"));
             }
+            line.push_str(&count_marker(&p, n));
             lines.push(line);
         }
     }
