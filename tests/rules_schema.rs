@@ -384,13 +384,11 @@ fn no_config_rule_sits_under_a_directory_that_is_not_entered() {
                 if dir.as_os_str().is_empty() {
                     continue;
                 }
-                let by_cache_rule = rules
-                    .lookup(&dir.join("x"))
-                    .is_some_and(|m| matches!(m.kind, Kind::Cache | Kind::State));
                 assert!(
-                    by_cache_rule || !prunes_dir(dir, &rules),
-                    "rule {} (glob {g}): directory {} is named like a cache and is not entered; \
-                     make the rule cover {}/**",
+                    !prunes_dir(dir, &rules),
+                    "rule {} (glob {g}): directory {} is not entered (a cache or state rule \
+                     or a cache-like name prunes it); make the rule cover {}/** ahead of any \
+                     cache or state rule for it",
                     d.app,
                     dir.display(),
                     dir.display()
