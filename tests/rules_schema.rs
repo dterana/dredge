@@ -297,7 +297,10 @@ fn class(p: &str) -> (Option<String>, Kind) {
 #[test]
 fn gcloud_config_rule_covers_only_configurations() {
     let config = (Some("gcloud".to_string()), Kind::Config);
-    assert_eq!(class(".config/gcloud/configurations/config_default"), config);
+    assert_eq!(
+        class(".config/gcloud/configurations/config_default"),
+        config
+    );
     assert_eq!(class(".config/gcloud/active_config"), config);
     assert_eq!(
         class(".config/gcloud/logs/2026.11.16/x.log"),
@@ -344,7 +347,10 @@ fn fired(line: &str) -> Vec<String> {
 #[test]
 fn ngrok_authtoken_matches_yaml_and_env_forms_but_not_npm() {
     let fake = rep("a1", 15);
-    assert_eq!(fired(&format!("authtoken: {fake}")), vec!["ngrok-authtoken"]);
+    assert_eq!(
+        fired(&format!("authtoken: {fake}")),
+        vec!["ngrok-authtoken"]
+    );
     assert_eq!(
         fired(&format!("export {}={fake}", "NGROK_AUTHTOKEN")),
         vec!["ngrok-authtoken"]

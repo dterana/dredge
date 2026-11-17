@@ -1,6 +1,6 @@
 #![cfg_attr(not(test), deny(clippy::unwrap_used, clippy::expect_used))]
 
-use std::io::{IsTerminal, Write};
+use std::io::{ErrorKind, IsTerminal, Write};
 use std::process::ExitCode;
 
 use clap::Parser;
@@ -14,13 +14,12 @@ fn main() -> ExitCode {
     let rep = match scan::run(&args) {
         Ok(r) => r,
         Err(err) => {
-            eprintln!("dredge: {err:#}");
+            say(&format!("dredge: {err:#}"));
             return ExitCode::from(2);
         }
     };
     for note in &rep.notes {
-        // A closed stderr must not abort the run.
-        let _ = writeln!(std::io::stderr(), "dredge: note: {note}");
+        say(&format!("dredge: note: {note}"));
     }
     let out = if args.json {
         report::render_json(&rep)
@@ -31,13 +30,23 @@ fn main() -> ExitCode {
         report::render_human(&rep, color, args.all)
     };
     let mut stdout = std::io::stdout().lock();
-    if stdout
+    match stdout
         .write_all(out.as_bytes())
         .and_then(|_| stdout.flush())
-        .is_err()
     {
-        return ExitCode::from(2);
+        Ok(()) => {}
+        // The reader went away (for example `| head`): not a tool failure.
+        Err(e) if e.kind() == ErrorKind::BrokenPipe => {}
+        Err(e) => {
+            say(&format!("dredge: cannot write the report: {e}"));
+            return ExitCode::from(2);
+        }
     }
     let code = exit::code(&rep, &args.fail_on);
     ExitCode::from(u8::try_from(code).unwrap_or(2))
+}
+
+/// One line on stderr. Unlike `eprintln!`, never panics when stderr is closed.
+fn say(line: &str) {
+    let _ = writeln!(std::io::stderr(), "{line}");
 }
