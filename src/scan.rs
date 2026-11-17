@@ -1,11 +1,12 @@
 //! Orchestration: resolve inputs, walk, classify, track, secret-scan, and
 //! assemble the report. Read-only throughout.
 
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::fs;
 use std::io::Read;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::Mutex;
 use std::thread;
 use std::time::Duration;
 
@@ -682,7 +683,7 @@ fn assemble(
 /// Most directory levels searched upward from a dotfiles dir for `.git`.
 const GIT_ROOT_MAX_UP: usize = 64;
 
-/// Largest `.gitignore` read above a dotfiles dir.
+/// Largest `.gitignore` that is read.
 const MAX_GITIGNORE_BYTES: u64 = 1024 * 1024;
 
 /// The git work tree enclosing `dir`: the nearest of `dir` and its ancestors
@@ -695,16 +696,17 @@ fn git_root(dir: &Path) -> Option<&Path> {
         .find(|a| fs::symlink_metadata(a.join(".git")).is_ok_and(|m| m.is_dir() || m.is_file()))
 }
 
-/// The `.gitignore` of directory `base` as a matcher rooted at `base`. Read
-/// through `open_regular` (never a symlink or FIFO) with a size cap; `None`
-/// when absent, unusual, too large or empty.
+/// The `.gitignore` of directory `base` as a matcher rooted at `base`. Opened
+/// only through `open_regular` (never a symlink, FIFO or device) and read
+/// only when the opened file is at most `MAX_GITIGNORE_BYTES`; `None` when
+/// absent, unusual, too large or empty. The only reader of ignore files in
+/// the committed scan.
 fn read_gitignore(base: &Path) -> Option<Gitignore> {
     let path = base.join(".gitignore");
-    match fs::symlink_metadata(&path) {
-        Ok(m) if m.file_type().is_file() && m.len() <= MAX_GITIGNORE_BYTES => {}
-        _ => return None,
-    }
     let file = open_regular(&path).ok().flatten()?;
+    if file.metadata().ok()?.len() > MAX_GITIGNORE_BYTES {
+        return None;
+    }
     let mut buf = Vec::new();
     if file
         .take(MAX_GITIGNORE_BYTES + 1)
@@ -722,42 +724,88 @@ fn read_gitignore(base: &Path) -> Option<Gitignore> {
     builder.build().ok().filter(|g| !g.is_empty())
 }
 
-/// Matchers for the `.gitignore` files of the directories strictly above
-/// `dir` up to and including its git root, deepest first. Empty when there
-/// is no git root or `dir` is the root: then the walk alone reads every
-/// ignore file that applies. Nothing above the git root is ever read.
-fn gitignores_above(dir: &Path) -> Vec<(PathBuf, Gitignore)> {
-    let Some(root) = git_root(dir) else {
-        return Vec::new();
-    };
-    dir.ancestors()
-        .skip(1)
-        .take_while(|a| a.starts_with(root))
-        .filter_map(|a| read_gitignore(a).map(|g| (a.to_path_buf(), g)))
-        .collect()
+/// The `.gitignore` files that apply to one committed walk: those of every
+/// directory from `top` (the enclosing git root, or the walked dir when
+/// there is none) down to each entry. Each file is read at most once.
+struct GitIgnores {
+    top: PathBuf,
+    cache: HashMap<PathBuf, Option<Gitignore>>,
 }
 
-/// True if the deepest of `above` with an opinion on `path` ignores it.
-fn ignored_above(above: &[(PathBuf, Gitignore)], path: &Path, is_dir: bool) -> bool {
-    for (base, gi) in above {
-        let Ok(rel) = path.strip_prefix(base) else {
-            continue;
-        };
-        if rel.as_os_str().is_empty() {
-            continue;
-        }
-        match gi.matched_path_or_any_parents(rel, is_dir) {
-            Match::Ignore(_) => return true,
-            Match::Whitelist(_) => return false,
-            Match::None => {}
+impl GitIgnores {
+    fn new(dir: &Path) -> GitIgnores {
+        GitIgnores {
+            top: git_root(dir).unwrap_or(dir).to_path_buf(),
+            cache: HashMap::new(),
         }
     }
-    false
+
+    /// Git's verdict for `path` (strictly below `top`), given that no
+    /// directory above it is excluded: the deepest `.gitignore`, from the
+    /// entry's own directory up to `top`, with a matching pattern decides,
+    /// and inside one file the last matching pattern wins.
+    fn ignored(&mut self, path: &Path, is_dir: bool) -> bool {
+        let Some(parent) = path.parent() else {
+            return false;
+        };
+        for dir in parent.ancestors().take_while(|d| d.starts_with(&self.top)) {
+            let gi = self
+                .cache
+                .entry(dir.to_path_buf())
+                .or_insert_with(|| read_gitignore(dir));
+            if let Some(gi) = gi {
+                match gi.matched(path, is_dir) {
+                    Match::Ignore(_) => return true,
+                    Match::Whitelist(_) => return false,
+                    Match::None => {}
+                }
+            }
+        }
+        false
+    }
+
+    /// True if `dir` or a directory between `top` and it is excluded. Git
+    /// then ignores everything inside, whatever a negation says, so each
+    /// directory is checked from the top down.
+    fn excluded_from_top(&mut self, dir: &Path) -> bool {
+        let Ok(rel) = dir.strip_prefix(&self.top) else {
+            return false;
+        };
+        let mut cur = self.top.clone();
+        for c in rel.components() {
+            cur.push(c);
+            if self.ignored(&cur, true) {
+                return true;
+            }
+        }
+        false
+    }
+}
+
+/// The walk of one dotfiles dir for committed secrets, before the ignore
+/// filter: symlinks not followed, depth capped, and every ignore source of
+/// the `ignore` crate disabled (`.gitignore`, `.ignore`, `.git/info/exclude`,
+/// the global gitignore, parent directories, no custom ignore names), so the
+/// crate itself never opens an ignore file.
+fn committed_walk_builder(dir: &Path) -> WalkBuilder {
+    let mut b = WalkBuilder::new(dir);
+    b.standard_filters(false)
+        .git_ignore(false)
+        .git_global(false)
+        .git_exclude(false)
+        .parents(false)
+        .hidden(false)
+        .ignore(false)
+        .require_git(false)
+        .follow_links(false)
+        .max_depth(Some(DOTFILES_MAX_DEPTH));
+    b
 }
 
 /// Scans the dotfiles working tree, honoring the `.gitignore` files inside
-/// it and those between it and its enclosing git root (see
-/// `gitignores_above`). Regular files only; symlinks are not followed;
+/// it and those from its enclosing git root down to it (see `GitIgnores`).
+/// Nothing is scanned when the dir itself lies in an excluded directory.
+/// Regular files only; symlinks are not followed;
 /// `.git` is skipped. Files already in `seen` are skipped, and every file
 /// scanned is added to it.
 fn scan_committed(
@@ -768,21 +816,21 @@ fn scan_committed(
     progress: &mut Progress,
     files_done: &mut usize,
 ) -> Vec<Finding> {
-    let above = gitignores_above(dir);
-    let walker = WalkBuilder::new(dir)
-        .standard_filters(false)
-        .git_ignore(true)
-        .git_global(false)
-        .git_exclude(false)
-        .parents(false)
-        .hidden(false)
-        .ignore(false)
-        .require_git(false)
-        .follow_links(false)
-        .max_depth(Some(DOTFILES_MAX_DEPTH))
+    let mut ignores = GitIgnores::new(dir);
+    if ignores.excluded_from_top(dir) {
+        return Vec::new();
+    }
+    let ignores = Mutex::new(ignores);
+    // The crate reads no ignore file of its own: every source is off, so
+    // `.gitignore` files are read only by `read_gitignore` in the filter.
+    let walker = committed_walk_builder(dir)
         .filter_entry(move |e| {
-            e.file_name() != ".git"
-                && !ignored_above(&above, e.path(), e.file_type().is_some_and(|t| t.is_dir()))
+            if e.file_name() == ".git" {
+                return false;
+            }
+            let is_dir = e.file_type().is_some_and(|t| t.is_dir());
+            let mut ignores = ignores.lock().unwrap_or_else(|p| p.into_inner());
+            !ignores.ignored(e.path(), is_dir)
         })
         .build();
     let mut findings = Vec::new();
