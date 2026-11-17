@@ -19,6 +19,8 @@ pub struct RepoEntry {
 #[derive(Debug, Default)]
 pub struct Index {
     entries: BTreeMap<PathBuf, RepoEntry>,
+    /// Subdirectories of the dotfiles dir that could not be read.
+    unreadable: Vec<PathBuf>,
 }
 
 pub fn detect(dir: &Path, arg: LayoutArg) -> Layout {
@@ -55,19 +57,32 @@ fn children(dir: &Path) -> std::io::Result<Vec<(String, PathBuf, std::fs::FileTy
     Ok(out)
 }
 
+/// Children of a subdirectory; a failure records `dir` as unreadable and
+/// yields nothing, so the rest of the index is still built.
+fn sub_children(
+    dir: &Path,
+    unreadable: &mut Vec<PathBuf>,
+) -> Vec<(String, PathBuf, std::fs::FileType)> {
+    children(dir).unwrap_or_else(|_| {
+        unreadable.push(dir.to_path_buf());
+        Vec::new()
+    })
+}
+
 /// Walk a stow package, mapping paths relative to the package root.
 fn walk_stow(
     dir: &Path,
     rel: &Path,
     entries: &mut BTreeMap<PathBuf, RepoEntry>,
-) -> std::io::Result<()> {
-    for (name, path, ft) in children(dir)? {
+    unreadable: &mut Vec<PathBuf>,
+) {
+    for (name, path, ft) in sub_children(dir, unreadable) {
         if name == ".git" {
             continue;
         }
         let child_rel = rel.join(&name);
         if ft.is_dir() {
-            walk_stow(&path, &child_rel, entries)?;
+            walk_stow(&path, &child_rel, entries, unreadable);
         } else if ft.is_file() {
             entries.entry(child_rel).or_insert(RepoEntry {
                 repo_path: path,
@@ -76,7 +91,6 @@ fn walk_stow(
             });
         }
     }
-    Ok(())
 }
 
 /// Result of decoding one chezmoi source path component.
@@ -149,8 +163,9 @@ fn walk_chezmoi(
     rel: &Path,
     inherited_unverified: bool,
     entries: &mut BTreeMap<PathBuf, RepoEntry>,
-) -> std::io::Result<()> {
-    for (name, path, ft) in children(dir)? {
+    unreadable: &mut Vec<PathBuf>,
+) {
+    for (name, path, ft) in sub_children(dir, unreadable) {
         // chezmoi ignores source names starting with "." (including .git)
         if name.starts_with('.') {
             continue;
@@ -162,7 +177,8 @@ fn walk_chezmoi(
                 &rel.join(d.name),
                 inherited_unverified || d.unverified,
                 entries,
-            )?;
+                unreadable,
+            );
         } else if ft.is_file() {
             let d = decode(&name, true);
             if d.skip || d.name.is_empty() {
@@ -175,7 +191,6 @@ fn walk_chezmoi(
             });
         }
     }
-    Ok(())
 }
 
 /// Real chezmoi source root. `.chezmoiroot` is honored only when it is a
@@ -232,24 +247,41 @@ fn chezmoi_root(dir: &Path) -> PathBuf {
 }
 
 impl Index {
+    /// Fails only when `dir` itself cannot be read; an unreadable
+    /// subdirectory is recorded in [`Index::unreadable`] and skipped.
     pub fn build(dir: &Path, layout: Layout) -> std::io::Result<Index> {
         let mut entries = BTreeMap::new();
+        let mut unreadable = Vec::new();
         match layout {
             Layout::Stow => {
                 for (name, path, ft) in children(dir)? {
                     if name.starts_with('.') || !ft.is_dir() {
                         continue;
                     }
-                    walk_stow(&path, Path::new(""), &mut entries)?;
+                    walk_stow(&path, Path::new(""), &mut entries, &mut unreadable);
                 }
             }
             Layout::Chezmoi => {
-                // Fail early on a missing or non-directory dir.
-                std::fs::read_dir(dir)?;
-                walk_chezmoi(&chezmoi_root(dir), Path::new(""), false, &mut entries)?;
+                // Fail early on a missing, unreadable or non-directory dir.
+                children(dir)?;
+                walk_chezmoi(
+                    &chezmoi_root(dir),
+                    Path::new(""),
+                    false,
+                    &mut entries,
+                    &mut unreadable,
+                );
             }
         }
-        Ok(Index { entries })
+        unreadable.sort();
+        Ok(Index {
+            entries,
+            unreadable,
+        })
+    }
+
+    pub fn unreadable(&self) -> &[PathBuf] {
+        &self.unreadable
     }
 
     pub fn lookup(&self, home_rel: &Path) -> Option<RepoEntry> {

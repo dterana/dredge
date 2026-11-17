@@ -455,6 +455,62 @@ fn unreadable_directory_does_not_fail_scan() {
 }
 
 #[test]
+fn unreadable_subdir_in_dotfiles_does_not_fail_scan() {
+    if unsafe { libc::geteuid() } == 0 {
+        eprintln!("SKIPPED: running as root, chmod 000 does not block reads");
+        return;
+    }
+    let e = Env::new();
+    e.d("zsh/.zshrc", "export A=1\n");
+    e.h(".zshrc", "export A=2\n");
+    e.d("git/.gitconfig", "[user]\n");
+    e.h(".gitconfig", "[user]\n");
+    e.d("locked/sub/.foo", "x\n");
+    let locked = fs::canonicalize(e.dots()).unwrap().join("locked/sub");
+    let _guard = RestoreMode {
+        path: locked.clone(),
+    };
+    e.fx.chmod(&locked, 0o000);
+
+    let r = e.scan(&[]);
+    // Drift on .zshrc is still found, so the normal exit rules give 1.
+    assert_eq!(r.code, Some(1), "stderr: {}", r.stderr);
+    assert!(r.stderr.is_empty(), "stderr: {}", r.stderr);
+    let section = r
+        .stdout
+        .split("COULD NOT READ")
+        .nth(1)
+        .expect("COULD NOT READ section missing");
+    assert!(section.contains("dots/locked/sub"), "{}", r.stdout);
+    assert!(
+        r.stdout.contains("differs from dots/zsh/.zshrc"),
+        "{}",
+        r.stdout
+    );
+
+    let r = e.scan(&["--json", "--all"]);
+    assert_eq!(r.code, Some(1));
+    let v: serde_json::Value = serde_json::from_str(&r.stdout).unwrap();
+    let unreadable: Vec<&str> = v["unreadable"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|p| p.as_str().unwrap())
+        .collect();
+    assert!(
+        unreadable.contains(&&*locked.to_string_lossy()),
+        "{unreadable:?}"
+    );
+    let gitconfig = v["units"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|u| u["path"].as_str().unwrap().ends_with("/.gitconfig"))
+        .expect("gitconfig unit");
+    assert_eq!(gitconfig["tracking"], "tracked");
+}
+
+#[test]
 fn fifo_in_home_does_not_hang() {
     let e = Env::new();
     e.d("zsh/.zshrc", "export A=1\n");

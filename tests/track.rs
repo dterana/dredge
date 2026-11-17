@@ -367,3 +367,68 @@ fn stow_index_skips_dot_dirs_and_does_not_follow_symlinks() {
     assert_eq!(index.entries().count(), 1);
     assert!(index.lookup(Path::new(".zshrc")).is_some());
 }
+
+struct RestoreDir(PathBuf);
+impl Drop for RestoreDir {
+    fn drop(&mut self) {
+        use std::os::unix::fs::PermissionsExt;
+        let _ = fs::set_permissions(&self.0, fs::Permissions::from_mode(0o755));
+    }
+}
+
+fn running_as_root() -> bool {
+    unsafe { libc::geteuid() == 0 }
+}
+
+#[test]
+fn unreadable_subdirs_are_recorded_and_build_continues() {
+    if running_as_root() {
+        eprintln!("SKIPPED: running as root, chmod 000 does not block reads");
+        return;
+    }
+    let f = Fixture::new();
+    // stow: an unreadable package dir and an unreadable nested dir
+    let repo = f.dir("stow");
+    write(&repo.join("zsh/.zshrc"), "a");
+    write(&repo.join("lockedpkg/.x"), "a");
+    write(&repo.join("git/.config/git/locked/y"), "a");
+    write(&repo.join("git/.gitconfig"), "a");
+    let pkg = repo.join("lockedpkg");
+    let nested = repo.join("git/.config/git/locked");
+    let _g1 = RestoreDir(pkg.clone());
+    let _g2 = RestoreDir(nested.clone());
+    f.chmod(&pkg, 0o000);
+    f.chmod(&nested, 0o000);
+    let index = Index::build(&repo, Layout::Stow).expect("subdir denial is not fatal");
+    assert_eq!(index.unreadable(), &[nested.clone(), pkg.clone()][..]);
+    assert!(index.lookup(Path::new(".zshrc")).is_some());
+    assert!(index.lookup(Path::new(".gitconfig")).is_some());
+
+    // chezmoi: an unreadable source subdir
+    let chez = f.dir("chez");
+    write(&chez.join("dot_zshrc"), "a");
+    write(&chez.join("dot_config/locked/x"), "a");
+    write(&chez.join("dot_config/ok/y"), "a");
+    let locked = chez.join("dot_config/locked");
+    let _g3 = RestoreDir(locked.clone());
+    f.chmod(&locked, 0o000);
+    let index = Index::build(&chez, Layout::Chezmoi).expect("subdir denial is not fatal");
+    assert_eq!(index.unreadable(), &[locked.clone()][..]);
+    assert!(index.lookup(Path::new(".zshrc")).is_some());
+    assert!(index.lookup(Path::new(".config/ok/y")).is_some());
+}
+
+#[test]
+fn unreadable_top_level_dotfiles_dir_is_still_an_error() {
+    if running_as_root() {
+        eprintln!("SKIPPED: running as root, chmod 000 does not block reads");
+        return;
+    }
+    let f = Fixture::new();
+    let repo = f.dir("stow");
+    write(&repo.join("zsh/.zshrc"), "a");
+    let _g = RestoreDir(repo.clone());
+    f.chmod(&repo, 0o000);
+    assert!(Index::build(&repo, Layout::Stow).is_err());
+    assert!(Index::build(&repo, Layout::Chezmoi).is_err());
+}

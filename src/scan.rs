@@ -86,6 +86,7 @@ pub fn run(args: &ScanArgs) -> Result<Report> {
         secrets: SecretRules::embedded(),
     };
     let mut unreadable = walked.unreadable;
+    unreadable.extend(index.unreadable().iter().cloned());
 
     // Attribute nested symlinks to their walked unit; the rest are unit roots.
     let mut nested: Vec<Vec<PathBuf>> = vec![Vec::new(); walked.units.len()];
