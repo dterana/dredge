@@ -1434,3 +1434,129 @@ fn duplicate_finding_rows_collapse_with_a_count() {
     assert_eq!(colored.matches("(x2)").count(), 2);
     assert_eq!(colored.matches("(x3)").count(), 1);
 }
+
+// ---- human output: unknown Application Support apps collapse ----
+
+const APPS_LINE: &str =
+    "unclassified apps under ~/Library/Application Support, run with --all to list)";
+
+fn with_app_support(apps: usize, others: usize) -> Env {
+    let e = Env::new();
+    for i in 0..apps {
+        e.h(
+            &format!("Library/Application Support/App{i:03}/state.txt"),
+            "x\n",
+        );
+    }
+    for i in 0..others {
+        e.h(&format!(".config/unk{i:02}/a.conf"), "x = 1\n");
+    }
+    e
+}
+
+#[test]
+fn unknown_app_support_units_collapse_into_one_line() {
+    let e = with_app_support(30, 3);
+    let rep = e.run(&e.args(&[]));
+    let out = render_human(&rep, false, false);
+    assert!(out.contains("\nUNKNOWN (3)\n"), "{out}");
+    assert!(
+        out.contains(&format!("  ~/.config/unk02\n  (+ 30 {APPS_LINE}\n")),
+        "{out}"
+    );
+    assert!(!out.contains("~/Library/Application Support/App"), "{out}");
+    // --all lists everything, with no collapse line.
+    let all = render_human(&rep, false, true);
+    assert!(all.contains("\nUNKNOWN (33)\n"), "{all}");
+    assert!(
+        all.contains("~/Library/Application Support/App029"),
+        "{all}"
+    );
+    assert!(!all.contains("unclassified apps"), "{all}");
+    // JSON keeps every unit.
+    let v: serde_json::Value = serde_json::from_str(&render_json(&rep)).unwrap();
+    let units = v["units"].as_array().unwrap();
+    assert_eq!(
+        units
+            .iter()
+            .filter(|u| u["path"]
+                .as_str()
+                .unwrap()
+                .contains("Library/Application Support/App"))
+            .count(),
+        30
+    );
+}
+
+#[test]
+fn one_unknown_app_support_unit_is_singular() {
+    let e = with_app_support(1, 0);
+    let out = render_human(&e.run(&e.args(&[])), false, false);
+    assert!(
+        out.contains(
+            "UNKNOWN (0)\n  (+ 1 unclassified app under ~/Library/Application Support, run with --all to list)\n"
+        ),
+        "{out}"
+    );
+}
+
+#[test]
+fn unknown_app_support_unit_with_a_secret_stays_listed() {
+    let e = with_app_support(4, 1);
+    e.h(
+        "Library/Application Support/Leaky/token.txt",
+        &format!("export T={GH_VALUE}\n"),
+    );
+    let rep = e.run(&e.args(&[]));
+    let out = render_human(&rep, false, false);
+    assert!(out.contains("\nUNKNOWN (2)\n"), "{out}");
+    assert!(
+        out.lines()
+            .any(|l| l.contains("~/Library/Application Support/Leaky") && l.ends_with("SECRET")),
+        "{out}"
+    );
+    assert!(out.contains(&format!("  (+ 4 {APPS_LINE}")), "{out}");
+    assert_order(
+        &out,
+        &[
+            "UNTRACKED SECRETS",
+            "~/Library/Application Support/Leaky/token.txt",
+        ],
+    );
+}
+
+#[test]
+fn unknown_cap_applies_to_the_units_left_after_the_collapse() {
+    let e = with_app_support(5, 25);
+    let out = render_human(&e.run(&e.args(&[])), false, false);
+    assert!(
+        out.contains("\nUNKNOWN (25)  showing 20, run with --all to list\n"),
+        "{out}"
+    );
+    assert!(
+        out.contains(&format!("  ~/.config/unk19\n  (+ 5 {APPS_LINE}\n")),
+        "{out}"
+    );
+    // Without Application Support units there is no collapse line.
+    let plain = with_app_support(0, 3);
+    let out = render_human(&plain.run(&plain.args(&[])), false, false);
+    assert!(!out.contains("unclassified app"), "{out}");
+    assert!(out.contains("\nUNKNOWN (3)\n  -   "), "{out}");
+}
+
+#[test]
+fn collapsed_output_is_the_same_for_any_worker_count() {
+    let e = with_app_support(40, 30);
+    for extra in [&[][..], &["--all"], &["--json"]] {
+        let run = |jobs: &str| {
+            e.bin()
+                .args(["--no-color", "--jobs", jobs])
+                .args(extra)
+                .output()
+                .unwrap()
+        };
+        let (one, eight) = (run("1"), run("8"));
+        assert!(one.stdout == eight.stdout, "{extra:?}");
+        assert_eq!(one.status.code(), eight.status.code());
+    }
+}

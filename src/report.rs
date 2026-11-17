@@ -54,6 +54,15 @@ pub fn display_path(report: &Report, p: &Path) -> String {
     p.to_string_lossy().into_owned()
 }
 
+/// Home-relative folder whose unknown units the human report collapses.
+const APP_SUPPORT: &str = "Library/Application Support";
+
+/// True for a path strictly inside `~/Library/Application Support`.
+fn in_app_support(report: &Report, p: &Path) -> bool {
+    p.strip_prefix(&report.home)
+        .is_ok_and(|rel| rel.starts_with(APP_SUPPORT) && rel != Path::new(APP_SUPPORT))
+}
+
 fn lossy(p: &Path) -> String {
     p.to_string_lossy().into_owned()
 }
@@ -279,12 +288,20 @@ pub fn render_human(report: &Report, color: bool, all: bool) -> String {
         out.section(&h("TRACKED", false), &lines);
     }
 
-    // UNKNOWN
-    let unknown: Vec<&Unit> = report
+    // UNKNOWN. Without `--all`, unknown app folders under Application
+    // Support that carry no finding are counted on one line instead of
+    // listed; a unit with a finding is always listed.
+    let mut unknown: Vec<&Unit> = report
         .units
         .iter()
         .filter(|u| u.kind == Kind::Unknown && is_untracked(u.tracking) && !u.ignored)
         .collect();
+    let mut collapsed_apps = 0;
+    if !all {
+        let before = unknown.len();
+        unknown.retain(|u| !(in_app_support(report, &u.path) && u.findings.is_empty()));
+        collapsed_apps = before - unknown.len();
+    }
     let shown = if all {
         unknown.len()
     } else {
@@ -294,7 +311,7 @@ pub fn render_human(report: &Report, color: bool, all: bool) -> String {
     if shown < unknown.len() {
         let _ = write!(header, "  showing {shown}, run with --all to list");
     }
-    let lines: Vec<String> = unknown[..shown]
+    let mut lines: Vec<String> = unknown[..shown]
         .iter()
         .map(|u| {
             let mut tags = Vec::new();
@@ -310,6 +327,13 @@ pub fn render_human(report: &Report, color: bool, all: bool) -> String {
             unit_line(report, &p, u, &tags)
         })
         .collect();
+    if collapsed_apps > 0 {
+        let noun = if collapsed_apps == 1 { "app" } else { "apps" };
+        lines.push(format!(
+            "  (+ {} unclassified {noun} under ~/{APP_SUPPORT}, run with --all to list)",
+            thousands(collapsed_apps)
+        ));
+    }
     out.section(&h(&header, false), &lines);
 
     // COULD NOT READ
