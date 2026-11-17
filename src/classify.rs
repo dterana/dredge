@@ -1,8 +1,11 @@
+use std::ffi::OsStr;
 use std::path::Path;
 
 use crate::model::Kind;
 use crate::rules::Rules;
 
+/// Directory names whose contents are cache or app state. Matched ASCII case
+/// insensitively, since macOS file systems usually are.
 const CACHE_DIRS: &[&str] = &[
     "Caches",
     "cache",
@@ -12,7 +15,35 @@ const CACHE_DIRS: &[&str] = &[
     "tmp",
     "GPUCache",
     "Crashpad",
+    // Chromium and Electron profile storage
+    "Code Cache",
+    "DawnCache",
+    "DawnGraphiteCache",
+    "DawnWebGPUCache",
+    "GrShaderCache",
+    "ShaderCache",
+    "Service Worker",
+    "IndexedDB",
+    "Local Storage",
+    "Session Storage",
+    "blob_storage",
+    "File System",
+    "WebStorage",
+    "Shared Dictionary",
+    "component_crx_cache",
+    "Crash Reports",
+    // Visual Studio Code and its forks
+    "CachedData",
+    "CachedExtensions",
+    "CachedExtensionVSIXs",
 ];
+
+/// True if a directory with this name holds cache or app state. The single
+/// test used both by classification and by the walker's pruning, so the two
+/// never disagree. `Cache` is covered by the case-insensitive `cache`.
+pub fn is_cache_dir_name(name: &OsStr) -> bool {
+    CACHE_DIRS.iter().any(|d| name.eq_ignore_ascii_case(d))
+}
 
 pub fn classify(home_rel: &Path, rules: &Rules) -> (Option<String>, Kind) {
     if let Some(m) = rules.lookup(home_rel) {
@@ -20,10 +51,7 @@ pub fn classify(home_rel: &Path, rules: &Rules) -> (Option<String>, Kind) {
     }
     let in_cache_dir = home_rel
         .parent()
-        .map(|p| {
-            p.components()
-                .any(|c| CACHE_DIRS.iter().any(|d| c.as_os_str() == *d))
-        })
+        .map(|p| p.components().any(|c| is_cache_dir_name(c.as_os_str())))
         .unwrap_or(false);
     if in_cache_dir {
         return (None, Kind::Cache);
@@ -83,6 +111,70 @@ mod tests {
         ] {
             assert_eq!(k(p), (None, Kind::Cache), "{p}");
         }
+    }
+
+    #[test]
+    fn chromium_and_editor_storage_dirs_are_cache() {
+        for name in [
+            "Cache",
+            "Code Cache",
+            "DawnCache",
+            "DawnGraphiteCache",
+            "DawnWebGPUCache",
+            "GrShaderCache",
+            "ShaderCache",
+            "Service Worker",
+            "IndexedDB",
+            "Local Storage",
+            "Session Storage",
+            "blob_storage",
+            "File System",
+            "WebStorage",
+            "Shared Dictionary",
+            "component_crx_cache",
+            "Crash Reports",
+            "CachedData",
+            "CachedExtensions",
+            "CachedExtensionVSIXs",
+        ] {
+            let p = format!("Library/Application Support/Notion/{name}/sub/f.txt");
+            assert_eq!(k(&p), (None, Kind::Cache), "{p}");
+            assert!(is_cache_dir_name(OsStr::new(name)), "{name}");
+        }
+    }
+
+    #[test]
+    fn cache_dir_names_match_ascii_case_insensitively() {
+        for name in [
+            "cache",
+            "CACHE",
+            "Cache",
+            "caches",
+            "LOGS",
+            "Tmp",
+            "indexeddb",
+            "LOCAL STORAGE",
+            "Node_Modules",
+        ] {
+            assert!(is_cache_dir_name(OsStr::new(name)), "{name}");
+            assert_eq!(k(&format!(".foo/{name}/x")), (None, Kind::Cache), "{name}");
+        }
+    }
+
+    #[test]
+    fn near_miss_names_are_not_cache() {
+        for name in [
+            "Cachet",
+            "my cache",
+            "Storage",
+            "Local",
+            "Partitions",
+            "log",
+        ] {
+            assert!(!is_cache_dir_name(OsStr::new(name)), "{name}");
+        }
+        // only directories count: a file named like a cache dir is not cache
+        assert_eq!(k(".foo/Cache"), (None, Kind::Unknown));
     }
 
     #[test]
