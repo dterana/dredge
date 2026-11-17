@@ -695,14 +695,15 @@ const MAX_GITIGNORE_BYTES: u64 = 1024 * 1024;
 fn git_root(dir: &Path) -> Option<&Path> {
     dir.ancestors()
         .take(GIT_ROOT_MAX_UP + 1)
-        .find(|a| fs::symlink_metadata(a.join(".git")).is_ok_and(|m| m.is_dir() || m.is_file()))
+        .find(|a| is_repo_root(a))
 }
 
 /// The `.gitignore` of directory `base` as a matcher rooted at `base`. Opened
-/// only through `open_regular` (never a symlink, FIFO or device) and read
-/// only when the opened file is at most `MAX_GITIGNORE_BYTES`; `None` when
-/// absent, unusual, too large or empty. The only reader of ignore files in
-/// the committed scan.
+/// only through `open_regular`, which refuses a symlink and closes a FIFO or
+/// device unread, and read only when the opened file is a regular file of at
+/// most `MAX_GITIGNORE_BYTES`; `None` when absent, unusual, too large or
+/// empty. The only
+/// reader of ignore files in the committed scan.
 fn read_gitignore(base: &Path) -> Option<Gitignore> {
     let path = base.join(".gitignore");
     let file = open_regular(&path).ok().flatten()?;
@@ -718,17 +719,39 @@ fn read_gitignore(base: &Path) -> Option<Gitignore> {
     {
         return None;
     }
+    let text = String::from_utf8_lossy(&buf);
     let mut builder = GitignoreBuilder::new(base);
-    for line in String::from_utf8_lossy(&buf).lines() {
+    for line in text.lines() {
         // A line that is not a valid pattern is skipped, as git does.
         let _ = builder.add_line(Some(path.clone()), line);
     }
     builder.build().ok().filter(|g| !g.is_empty())
 }
 
-/// Matchers for the `.gitignore` of each directory, shared by every
-/// committed walk of one run, so each file is read at most once.
-type GitignoreCache = Arc<Mutex<HashMap<PathBuf, Option<Gitignore>>>>;
+/// True if `dir` holds a `.git` directory or file (lstat only, so a
+/// symlinked `.git` does not count): the root of a repository.
+fn is_repo_root(dir: &Path) -> bool {
+    fs::symlink_metadata(dir.join(".git")).is_ok_and(|m| m.is_dir() || m.is_file())
+}
+
+/// Per-directory answers shared by every committed walk of one run, so each
+/// `.gitignore` is parsed and each `.git` checked at most once.
+#[derive(Default)]
+struct GitCache {
+    ignores: HashMap<PathBuf, Option<Gitignore>>,
+    repo_roots: HashMap<PathBuf, bool>,
+}
+
+impl GitCache {
+    fn repo_root(&mut self, dir: &Path) -> bool {
+        *self
+            .repo_roots
+            .entry(dir.to_path_buf())
+            .or_insert_with(|| is_repo_root(dir))
+    }
+}
+
+type GitignoreCache = Arc<Mutex<GitCache>>;
 
 /// The `.gitignore` files that apply to one committed walk: those of every
 /// directory from `top` (the enclosing git root, or the walked dir when
@@ -748,15 +771,22 @@ impl GitIgnores {
 
     /// Git's verdict for `path` (strictly below `top`), given that no
     /// directory above it is excluded: the deepest `.gitignore`, from the
-    /// entry's own directory up to `top`, with a matching pattern decides,
-    /// and inside one file the last matching pattern wins.
+    /// entry's own directory up to its repository's root, with a matching
+    /// pattern decides, and inside one file the last matching pattern wins.
+    /// The repository is the nearest one: a nested repo or submodule below
+    /// `top` uses only its own `.gitignore` files, and its root directory is
+    /// never ignored, so what it would commit is still scanned.
     fn ignored(&self, path: &Path, is_dir: bool) -> bool {
         let Some(parent) = path.parent() else {
             return false;
         };
         let mut cache = self.cache.lock().unwrap_or_else(|p| p.into_inner());
+        if is_dir && cache.repo_root(path) {
+            return false;
+        }
         for dir in parent.ancestors().take_while(|d| d.starts_with(&self.top)) {
             let gi = cache
+                .ignores
                 .entry(dir.to_path_buf())
                 .or_insert_with(|| read_gitignore(dir));
             if let Some(gi) = gi {
@@ -765,6 +795,9 @@ impl GitIgnores {
                     Match::Whitelist(_) => return false,
                     Match::None => {}
                 }
+            }
+            if cache.repo_root(dir) {
+                break;
             }
         }
         false

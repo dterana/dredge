@@ -1068,3 +1068,93 @@ fn an_oversized_gitignore_is_not_read() {
         committed_paths(&e, &v).contains(&"genesis/dotfiles-personal/zsh/local.env".to_string())
     );
 }
+
+// ---- nested git repositories and submodules ----
+
+/// `git_repo` plus nested repositories inside `dotfiles-personal`: `foo`
+/// (with `.git` as a directory, or a file when `git_file`), `bar` two levels
+/// down inside `foo`, and `build`, which the outer repo ignores.
+fn nested_repos(git_file: bool) -> Env {
+    let e = git_repo(false);
+    e.w(
+        "genesis/.gitignore",
+        "**/local.env\n/dotfiles-personal/zsh/secret\n*.key\nbuild/\n",
+    );
+    let t = token_line();
+    let foo = "genesis/dotfiles-personal/zsh/plugins/foo";
+    if git_file {
+        e.w(
+            &format!("{foo}/.git"),
+            "gitdir: ../../../../.git/modules/foo\n",
+        );
+    } else {
+        e.w(&format!("{foo}/.git/HEAD"), "ref: refs/heads/main\n");
+    }
+    e.w(&format!("{foo}/.gitignore"), "*.secret\n");
+    e.w(&format!("{foo}/api.key"), &t);
+    e.w(&format!("{foo}/ok.sh"), &t);
+    e.w(&format!("{foo}/sub/local.env"), &t);
+    e.w(&format!("{foo}/local.secret"), &t);
+    e.w(&format!("{foo}/vendor/bar/.git"), "gitdir: x\n");
+    e.w(&format!("{foo}/vendor/bar/x.secret"), &t);
+    e.w(
+        "genesis/dotfiles-personal/build/.git/HEAD",
+        "ref: refs/heads/main\n",
+    );
+    e.w("genesis/dotfiles-personal/build/b.env", &t);
+    // Outside any nested repo the outer patterns still apply.
+    e.w("genesis/dotfiles-personal/zsh/outer.key", &t);
+    e.w("genesis/dotfiles-personal/zsh/.envrc", &t);
+    e
+}
+
+#[test]
+fn nested_repos_use_only_their_own_gitignore_files() {
+    for git_file in [false, true] {
+        let e = nested_repos(git_file);
+        let foo = "genesis/dotfiles-personal/zsh/plugins/foo";
+        let want = vec![
+            "genesis/dotfiles-personal/build/b.env".to_string(),
+            "genesis/dotfiles-personal/zsh/.envrc".to_string(),
+            format!("{foo}/api.key"),
+            format!("{foo}/ok.sh"),
+            format!("{foo}/sub/local.env"),
+            format!("{foo}/vendor/bar/x.secret"),
+        ];
+        for dots in STOW_ARGS {
+            let v = json_with_deadline(&e, dots, 10);
+            assert_eq!(
+                committed_paths(&e, &v),
+                want,
+                "{dots:?} git_file {git_file}"
+            );
+        }
+        // Listed dir inside the nested repo: its own root is the git root.
+        let v = json_with_deadline(&e, &[foo], 10);
+        assert_eq!(
+            committed_paths(&e, &v),
+            vec![
+                format!("{foo}/api.key"),
+                format!("{foo}/ok.sh"),
+                format!("{foo}/sub/local.env"),
+                format!("{foo}/vendor/bar/x.secret"),
+            ],
+            "git_file {git_file}"
+        );
+    }
+}
+
+#[test]
+fn a_symlink_named_dot_git_does_not_start_a_nested_repo() {
+    let e = git_repo(false);
+    e.w("genesis/.gitignore", "*.key\n");
+    fs::create_dir_all(e.p("realgit")).unwrap();
+    let foo = "genesis/dotfiles-personal/zsh/foo";
+    fs::create_dir_all(e.p(foo)).unwrap();
+    symlink(e.p("realgit"), e.p(&format!("{foo}/.git"))).unwrap();
+    e.w(&format!("{foo}/api.key"), &token_line());
+    let v = json_with_deadline(&e, &["genesis/dotfiles-personal"], 10);
+    assert!(committed_paths(&e, &v)
+        .iter()
+        .all(|p| !p.ends_with("api.key")));
+}
