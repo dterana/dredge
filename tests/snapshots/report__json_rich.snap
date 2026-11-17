@@ -1,0 +1,116 @@
+---
+source: tests/report.rs
+expression: normalized
+---
+{
+  "committed_secrets": [
+    {
+      "committed": true,
+      "line": 1,
+      "path": "<DOTS>/shell/.envrc",
+      "rule_id": "github-token"
+    }
+  ],
+  "depth_truncated_dirs": 0,
+  "dotfiles": [
+    "<DOTS>"
+  ],
+  "home": "<HOME>",
+  "ignored": {
+    "cache_state_items": 1,
+    "dredgeignore": 0
+  },
+  "missing_on_machine": [
+    "<HOME>/.envrc",
+    "<HOME>/.vimrc",
+    "<HOME>/local.env"
+  ],
+  "pruned_dirs": 1,
+  "schema_version": 1,
+  "skipped_too_large": 0,
+  "units": [
+    {
+      "app": null,
+      "drifted": [],
+      "findings": [],
+      "ignored": false,
+      "kind": "cache",
+      "path": "<HOME>/.cache",
+      "symlink": false,
+      "tracking": "untracked"
+    },
+    {
+      "app": "herdr",
+      "drifted": [],
+      "findings": [],
+      "ignored": false,
+      "kind": "config",
+      "path": "<HOME>/.config/herdr",
+      "symlink": false,
+      "tracking": "untracked"
+    },
+    {
+      "app": null,
+      "drifted": [],
+      "findings": [],
+      "ignored": false,
+      "kind": "unknown",
+      "path": "<HOME>/.config/mystery",
+      "symlink": false,
+      "tracking": "untracked"
+    },
+    {
+      "app": "ngrok",
+      "drifted": [],
+      "findings": [
+        {
+          "committed": false,
+          "line": 1,
+          "path": "<HOME>/.config/ngrok/ngrok.yml",
+          "rule_id": "ngrok-authtoken"
+        }
+      ],
+      "ignored": false,
+      "kind": "config",
+      "path": "<HOME>/.config/ngrok",
+      "symlink": false,
+      "tracking": "untracked"
+    },
+    {
+      "app": "git",
+      "drifted": [],
+      "findings": [],
+      "ignored": false,
+      "kind": "config",
+      "path": "<HOME>/.gitconfig",
+      "symlink": false,
+      "tracking": "tracked"
+    },
+    {
+      "app": "zsh",
+      "drifted": [],
+      "findings": [],
+      "ignored": false,
+      "kind": "state",
+      "path": "<HOME>/.zsh_history",
+      "symlink": false,
+      "tracking": "untracked"
+    },
+    {
+      "app": "zsh",
+      "drifted": [
+        {
+          "path": "<HOME>/.zshrc",
+          "repo_path": "<DOTS>/zsh/.zshrc"
+        }
+      ],
+      "findings": [],
+      "ignored": false,
+      "kind": "config",
+      "path": "<HOME>/.zshrc",
+      "symlink": false,
+      "tracking": "tracked-drifted"
+    }
+  ],
+  "unreadable": []
+}
