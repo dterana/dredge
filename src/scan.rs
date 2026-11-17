@@ -306,7 +306,17 @@ fn assemble(
     } else {
         Kind::Cache
     };
-    let app = entries.iter().find_map(|e| e.app.clone());
+    // The label comes from an entry that decided the unit's kind. Only a
+    // state or cache unit may borrow a label from its other entries.
+    let app = entries
+        .iter()
+        .filter(|e| e.kind == kind)
+        .find_map(|e| e.app.clone())
+        .or_else(|| {
+            matches!(kind, Kind::State | Kind::Cache)
+                .then(|| entries.iter().find_map(|e| e.app.clone()))
+                .flatten()
+        });
     let states: Vec<Tracking> = entries.iter().filter_map(|e| e.tracking).collect();
     let tracking = track::unit_tracking(&states);
     let count = if matches!(kind, Kind::Cache | Kind::State)

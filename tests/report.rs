@@ -651,3 +651,27 @@ fn ignored_drifted_unit_still_fails_drift_end_to_end() {
     assert!(stdout.contains("1 ignored by .dredgeignore"), "{stdout}");
     e.bin().arg("--dotfiles").arg(e.dots()).assert().code(1);
 }
+
+#[test]
+fn unit_app_label_comes_from_an_entry_of_the_unit_kind() {
+    let e = Env::new();
+    // Unknown file decides the kind; the atuin state file must not name it.
+    e.h(".local/bin/mytool", "#!/bin/sh\n");
+    e.h(".local/share/atuin/history.db", "x\n");
+    // A config unit still takes its config app name.
+    e.h(".claude/history.jsonl", "{}\n");
+    e.h(".claude/settings.json", "{}\n");
+    let rep = e.run(&e.args(&[]));
+    let get = |rel: &str| {
+        let p = rep.home.join(rel);
+        rep.units.iter().find(|u| u.path == p).unwrap()
+    };
+    let local = get(".local");
+    assert_eq!(local.kind, Kind::Unknown);
+    assert_eq!(local.app, None);
+    let claude = get(".claude");
+    assert_eq!(claude.kind, Kind::Config);
+    assert_eq!(claude.app.as_deref(), Some("claude"));
+    let out = render_human(&rep, false, false);
+    assert!(!out.contains("atuin"), "{out}");
+}
