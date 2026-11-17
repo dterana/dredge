@@ -208,3 +208,25 @@ fn oversized_dredgeignore_is_treated_as_empty() {
     let (_fx, list) = list_from(&contents);
     assert!(!list.is_ignored(Path::new(".config/foo")));
 }
+
+#[test]
+fn ignored_drifted_unit_still_fails_drift() {
+    let home = Path::new("/home/u");
+    let drifted_file = unit("/home/u/.gitconfig", Tracking::TrackedDrifted, vec![]);
+    let mut partial = unit("/home/u/.config/git", Tracking::PartiallyTracked, vec![]);
+    partial.drifted.push(Drift {
+        path: PathBuf::from("/home/u/.config/git/config"),
+        repo_path: PathBuf::from("/dots/git/.config/git/config"),
+    });
+    let clean = unit("/home/u/.config/foo", Tracking::Untracked, vec![]);
+    let mut r = report(vec![drifted_file, partial, clean]);
+    let (_fx, list) = list_from(b".gitconfig\n.config/*\n");
+    list.apply(&mut r, home);
+    assert_eq!(r.units.len(), 2);
+    assert!(r.units.iter().all(|u| u.ignored));
+    assert_eq!(r.ignored_by_file, 3);
+    assert_eq!(exit::code(&r, &[FailOn::Drift]), 1);
+    assert_eq!(exit::code(&r, &default_fail_on()), 1);
+    // Ignoring still removes them from the untracked category.
+    assert_eq!(exit::code(&r, &[FailOn::Untracked]), 0);
+}

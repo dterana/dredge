@@ -623,3 +623,31 @@ fn extra_root_inside_dotfiles_dir_prints_note() {
     let stdout = String::from_utf8_lossy(&out.stdout);
     assert!(!stdout.contains("dots/zsh"), "{stdout}");
 }
+
+#[test]
+fn ignored_drifted_unit_still_fails_drift_end_to_end() {
+    let e = Env::new();
+    e.d("git/.gitconfig", "[user]\n  name = x\n");
+    e.h(".gitconfig", "[user]\n  name = changed\n");
+    e.d(".dredgeignore", ".gitconfig\n");
+    let out = e
+        .bin()
+        .arg("--dotfiles")
+        .arg(e.dots())
+        .args(["--fail-on", "drift"])
+        .output()
+        .unwrap();
+    assert_eq!(out.status.code(), Some(1));
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert_order(
+        &stdout,
+        &[
+            "TRACKED, DRIFTED",
+            "~/.gitconfig",
+            "differs from dots/git/.gitconfig",
+            "UNKNOWN (",
+        ],
+    );
+    assert!(stdout.contains("1 ignored by .dredgeignore"), "{stdout}");
+    e.bin().arg("--dotfiles").arg(e.dots()).assert().code(1);
+}

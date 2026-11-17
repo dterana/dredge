@@ -64,7 +64,8 @@ pub struct Unit {
     pub kind: Kind,
     pub tracking: Tracking,
     pub findings: Vec<Finding>,
-    /// Matched by `.dredgeignore`. Kept in the report only because it has findings.
+    /// Matched by `.dredgeignore`. Kept in the report only because it has
+    /// findings or drift.
     pub ignored: bool,
     /// The unit root itself is a symlink (listed, never followed).
     pub symlink: bool,

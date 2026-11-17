@@ -4,7 +4,7 @@ use std::path::Path;
 
 use globset::{Glob, GlobSet, GlobSetBuilder};
 
-use crate::model::Report;
+use crate::model::{Report, Tracking};
 use crate::secrets::open_regular;
 
 const MAX_IGNORE_BYTES: u64 = 64 * 1024;
@@ -69,7 +69,9 @@ impl IgnoreList {
             .any(|a| !a.as_os_str().is_empty() && (set.is_match(a) || set.is_match(a.join(PROBE))))
     }
 
-    /// Drops ignored units without findings and flags ignored units that still carry findings.
+    /// Ignoring only removes a unit from the untracked category: ignored units
+    /// with no findings and no drift are dropped, the rest are kept and
+    /// flagged so their secrets and drift are still reported.
     pub fn apply(&self, report: &mut Report, home: &Path) {
         if self.set.is_none() {
             return;
@@ -83,7 +85,8 @@ impl IgnoreList {
                 return true;
             }
             counted += 1;
-            if unit.findings.is_empty() {
+            let drifted = unit.tracking == Tracking::TrackedDrifted || !unit.drifted.is_empty();
+            if unit.findings.is_empty() && !drifted {
                 false
             } else {
                 unit.ignored = true;

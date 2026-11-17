@@ -71,7 +71,7 @@ Untracked configuration alone exits 0 unless you pass `--fail-on untracked`.
 
 ## .dredgeignore
 
-Place a `.dredgeignore` file at the root of the dotfiles repository to list paths that are intentionally untracked. They are left out of the untracked list and the exit code, and counted in the summary line.
+Place a `.dredgeignore` file at the root of the dotfiles repository to list paths that are intentionally untracked. Ignored paths are excluded from the untracked list only (and so from `--fail-on untracked`); drift and secrets are always reported. Each ignored item is counted in the summary line.
 
 The dialect is deliberately small:
 
@@ -82,7 +82,7 @@ The dialect is deliberately small:
 - No negation: a leading `!` is not special. No handling of a leading `/` (anchoring) or trailing `/` (directories only): patterns containing them will simply not match as in gitignore.
 - Lines that are not valid globs are silently skipped.
 - The file must be a regular file of at most 64 KiB; anything else is treated as an empty ignore list.
-- Ignoring never hides secrets: an ignored item that contains a secret is still reported (marked as ignored) and still affects the exit code under `secrets`.
+- Ignoring never hides secrets or drift: an ignored item that contains a secret is still reported (marked as ignored) and still affects the exit code under `secrets`, and an ignored tracked file that has drifted is still listed under TRACKED, DRIFTED and still affects the exit code under `drift`.
 
 ## Safety guarantees
 
