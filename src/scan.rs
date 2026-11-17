@@ -93,10 +93,14 @@ fn run_inner(args: &ScanArgs, progress: &mut Progress) -> Result<Report> {
     // Cache and state directories are not entered: the same test that
     // classifies their files, so pruning and classification agree.
     let prune = |dir: &Path| prunes_dir(&home_rel(&home, dir), &rules);
+    let visited = AtomicUsize::new(0);
     let opts = WalkOptions {
         prune: Some(&prune),
+        visited: Some(&visited),
     };
-    let mut walked = walk::scan_with(&roots, &excluded, &opts);
+    let mut walked = in_background(progress, &visited, Progress::walking, || {
+        walk::scan_with(&roots, &excluded, &opts)
+    })?;
     let notes: Vec<String> = walked.skipped.iter().map(skip_note).collect();
 
     // The dotfiles dir is compared against, never reported as home content.
@@ -194,6 +198,43 @@ fn default_jobs() -> usize {
         .clamp(1, MAX_DEFAULT_JOBS)
 }
 
+/// Runs `work` on a scoped thread while this thread shows `counter` through
+/// `show` on `progress`. A panic in `work` becomes an error without content.
+fn in_background<R: Send>(
+    progress: &mut Progress,
+    counter: &AtomicUsize,
+    show: fn(&mut Progress, usize),
+    work: impl FnOnce() -> R + Send,
+) -> Result<R> {
+    let main = thread::current();
+    thread::scope(|s| {
+        let handle = s.spawn(move || {
+            let r = work();
+            main.unpark();
+            r
+        });
+        poll(progress, counter, show, || handle.is_finished());
+        handle
+            .join()
+            .map_err(|_| anyhow!("internal error: the walk stopped unexpectedly"))
+    })
+}
+
+/// Shows `counter` every `PROGRESS_POLL` (or sooner when unparked) until
+/// `finished`, then once more with the final count.
+fn poll(
+    progress: &mut Progress,
+    counter: &AtomicUsize,
+    show: fn(&mut Progress, usize),
+    finished: impl Fn() -> bool,
+) {
+    while !finished() {
+        show(progress, counter.load(Ordering::Relaxed));
+        thread::park_timeout(PROGRESS_POLL);
+    }
+    show(progress, counter.load(Ordering::Relaxed));
+}
+
 /// Applies `f` to every item on up to `jobs` scoped worker threads and returns
 /// the results in item order, whatever the worker count. Workers claim items
 /// through an atomic index and keep their results local; nothing is locked.
@@ -234,11 +275,9 @@ where
                 })
             })
             .collect();
-        while !handles.iter().all(|h| h.is_finished()) {
-            progress.tick(counter.load(Ordering::Relaxed));
-            thread::park_timeout(PROGRESS_POLL);
-        }
-        progress.tick(counter.load(Ordering::Relaxed));
+        poll(progress, counter, Progress::tick, || {
+            handles.iter().all(|h| h.is_finished())
+        });
         for h in handles {
             let done = h
                 .join()

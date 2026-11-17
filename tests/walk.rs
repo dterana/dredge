@@ -447,7 +447,10 @@ use dredge::rules::Rules;
 /// uses: `classify::prunes_dir` on the home-relative directory.
 fn scan_pruned(home: &Path, rules: &Rules, extra: &[PathBuf]) -> WalkResult {
     let pred = |d: &Path| prunes_dir(d.strip_prefix(home).unwrap_or(d), rules);
-    let opts = walk::WalkOptions { prune: Some(&pred) };
+    let opts = walk::WalkOptions {
+        prune: Some(&pred),
+        ..Default::default()
+    };
     let mut roots = walk::default_roots(home);
     roots.extend(extra.iter().cloned().map(Root::extra));
     walk::scan_with(&roots, &[], &opts)
@@ -588,7 +591,10 @@ fn pruned_dir_at_the_depth_cap_is_not_depth_truncated() {
     fx.file("root/.u/a/b/c/d/e/deeper/y");
     let root = fx.root().join("root");
     let pred = |d: &Path| prunes_dir(d.strip_prefix(&root).unwrap_or(d), &Rules::embedded());
-    let opts = walk::WalkOptions { prune: Some(&pred) };
+    let opts = walk::WalkOptions {
+        prune: Some(&pred),
+        ..Default::default()
+    };
     let r = walk::scan_with(&[Root::extra(root.clone())], &[], &opts);
     assert_eq!(r.pruned_dirs, 1);
     assert_eq!(r.depth_truncated, 1);
@@ -607,4 +613,29 @@ fn extra_root_inside_a_pruned_dir_is_walked() {
     assert!(r.skipped.is_empty(), "{:?}", r.skipped);
     assert_eq!(r.pruned_dirs, 1);
     unit(&r, &extra.join("k.txt"));
+}
+
+#[test]
+fn visited_counts_every_entry_read_and_nothing_inside_pruned_dirs() {
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    let fx = Fixture::new();
+    fx.file("root/.a/one");
+    fx.file("root/.a/sub/two");
+    fx.file("root/.a/Cache/x/y/z");
+    fx.file("root/.b");
+    let root = fx.root().join("root");
+    let count = |prune: bool| {
+        let visited = AtomicUsize::new(0);
+        let pred = |d: &Path| prunes_dir(d.strip_prefix(&root).unwrap_or(d), &Rules::embedded());
+        let opts = walk::WalkOptions {
+            prune: if prune { Some(&pred) } else { None },
+            visited: Some(&visited),
+        };
+        walk::scan_with(&[Root::extra(root.clone())], &[], &opts);
+        visited.load(Ordering::Relaxed)
+    };
+    // root: .a .b; .a: one sub Cache; sub: two.
+    assert_eq!(count(true), 6);
+    // Without pruning, Cache/x/y/z adds x, y and z.
+    assert_eq!(count(false), 9);
 }

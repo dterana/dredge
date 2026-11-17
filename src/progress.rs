@@ -37,6 +37,17 @@ impl Progress {
     /// Reports how many files have been processed so far. Rewrites the line
     /// unless the previous update is more recent than the minimum interval.
     pub fn tick(&mut self, files_scanned: usize) {
+        self.show(|| format!("dredge: scanned {} files...", thousands(files_scanned)));
+    }
+
+    /// Reports how many directory entries the walk has read so far. Same
+    /// throttling as `tick`.
+    pub fn walking(&mut self, entries: usize) {
+        self.show(|| format!("dredge: walking... {} entries", thousands(entries)));
+    }
+
+    /// Rewrites the line, padded with spaces to cover a longer previous one.
+    fn show(&mut self, line: impl FnOnce() -> String) {
         if !self.enabled {
             return;
         }
@@ -47,9 +58,10 @@ impl Progress {
             }
         }
         self.last_update = Some(now);
-        let line = format!("dredge: scanned {} files...", thousands(files_scanned));
-        let width = line.len();
-        if self.write(&format!("\r{line}")) {
+        let line = line();
+        let width = line.len().max(self.shown);
+        let pad = " ".repeat(width - line.len());
+        if self.write(&format!("\r{line}{pad}")) {
             self.shown = width;
         }
     }
@@ -165,9 +177,45 @@ mod tests {
     }
 
     #[test]
+    fn walking_shows_entries_and_a_shorter_scan_line_covers_it() {
+        let buf = Buf::default();
+        let mut p = Progress::new(Box::new(buf.clone()), true, Duration::ZERO);
+        p.walking(7);
+        p.walking(123_456);
+        let walk = "dredge: walking... 123,456 entries";
+        assert_eq!(
+            buf.text(),
+            format!("\rdredge: walking... 7 entries\r{walk}")
+        );
+        p.tick(5);
+        let scan = "dredge: scanned 5 files...";
+        let pad = " ".repeat(walk.len() - scan.len());
+        assert!(
+            buf.text().ends_with(&format!("\r{scan}{pad}")),
+            "{:?}",
+            buf.text()
+        );
+        p.finish();
+        let clear = format!("\r{}\r", " ".repeat(walk.len()));
+        assert!(buf.text().ends_with(&clear), "{:?}", buf.text());
+    }
+
+    #[test]
+    fn disabled_walking_writes_nothing() {
+        let buf = Buf::default();
+        let mut p = Progress::new(Box::new(buf.clone()), false, Duration::ZERO);
+        p.walking(1);
+        p.walking(99_999);
+        p.tick(3);
+        p.finish();
+        assert_eq!(buf.text(), "");
+    }
+
+    #[test]
     fn write_errors_are_ignored() {
         let mut p = Progress::new(Box::new(Broken), true, Duration::ZERO);
         p.tick(1);
+        p.walking(2);
         p.tick(2);
         p.finish();
     }

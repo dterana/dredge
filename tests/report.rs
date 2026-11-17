@@ -864,7 +864,12 @@ fn progress_counts_processed_files_deterministically_and_clears() {
     let rep = scan::run_with_progress(&e.args(&[]), &mut p).unwrap();
     assert_eq!(rep.units.len(), 2);
     let text = String::from_utf8(buf.0.lock().unwrap().clone()).unwrap();
-    assert!(text.contains("dredge: scanned 3 files..."), "{text:?}");
+    // The walk reads 6 entries: `.config` in home, `a` and `b` in `.config`,
+    // then the three files.
+    let walking = text.find("dredge: walking... 6 entries");
+    let scanned = text.find("dredge: scanned 3 files...");
+    assert!(walking.is_some() && walking < scanned, "{text:?}");
+    assert!(!text.contains("walking... 7"), "{text:?}");
     assert!(!text.contains("scanned 4"), "{text:?}");
     assert!(text.ends_with('\r'), "{text:?}");
     assert!(!text.contains(".config") && !text.contains("one.toml"));

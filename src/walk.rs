@@ -5,6 +5,7 @@ use std::ffi::OsStr;
 use std::fs;
 use std::io;
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicUsize, Ordering};
 
 /// Maximum depth inside a unit. A file directly in a unit dir is depth 1.
 pub const MAX_DEPTH: usize = 6;
@@ -33,18 +34,27 @@ pub struct UnitFiles {
     pub pruned: bool,
 }
 
-/// Optional walk behavior. The default prunes nothing.
+/// Optional walk behavior. The default prunes nothing and counts nothing.
 #[derive(Clone, Copy, Default)]
 pub struct WalkOptions<'a> {
     /// Called with the absolute path of every directory the walk is about to
     /// enter (unit roots included, walk roots excluded). `true` means the
     /// directory is not listed, not entered, and counted in `pruned_dirs`.
-    pub prune: Option<&'a dyn Fn(&Path) -> bool>,
+    pub prune: Option<&'a (dyn Fn(&Path) -> bool + Sync)>,
+    /// Incremented once (relaxed) for every directory entry the walk reads,
+    /// so another thread can show progress.
+    pub visited: Option<&'a AtomicUsize>,
 }
 
 impl WalkOptions<'_> {
     fn prunes(&self, dir: &Path) -> bool {
         self.prune.is_some_and(|f| f(dir))
+    }
+
+    fn visit(&self) {
+        if let Some(c) = self.visited {
+            c.fetch_add(1, Ordering::Relaxed);
+        }
     }
 }
 
@@ -284,6 +294,7 @@ fn scan_root(
         }
     };
     for entry in entries {
+        opts.visit();
         let entry = match entry {
             Ok(e) => e,
             Err(_) => {
@@ -348,6 +359,7 @@ fn walk_dir(
         }
     };
     for entry in entries {
+        opts.visit();
         let entry = match entry {
             Ok(e) => e,
             Err(_) => {
