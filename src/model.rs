@@ -83,6 +83,10 @@ pub struct Report {
     pub unreadable: Vec<PathBuf>,
     pub ignored_by_file: usize,
     pub cache_state_count: usize,
+    /// Directories not entered because they sit at the walk depth cap.
+    pub depth_truncated: usize,
+    /// Config or unknown files over the scan size cap, not scanned for secrets.
+    pub skipped_too_large: usize,
     pub committed_findings: Vec<Finding>,
     /// Home-relative paths present in the repo but missing from home.
     pub missing_on_machine: Vec<PathBuf>,

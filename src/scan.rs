@@ -13,7 +13,7 @@ use crate::dredgeignore::IgnoreList;
 use crate::layout::{self, Index};
 use crate::model::{Drift, Finding, Kind, Report, Tracking, Unit};
 use crate::rules::Rules;
-use crate::secrets::{scan_file, SecretRules};
+use crate::secrets::{scan_file, scan_file_detailed, SecretRules, SkipReason};
 use crate::track;
 use crate::walk::{self, display_lossy, Root, SkippedRoot};
 
@@ -104,10 +104,11 @@ pub fn run(args: &ScanArgs) -> Result<Report> {
 
     let mut units = Vec::new();
     let mut cache_state_count = 0;
+    let mut skipped_too_large = 0;
     for (uf, links) in walked.units.into_iter().zip(nested) {
         let mut entries: Vec<Entry> = Vec::new();
         for f in &uf.files {
-            entries.push(file_entry(&ctx, f, &mut unreadable));
+            entries.push(file_entry(&ctx, f, &mut unreadable, &mut skipped_too_large));
         }
         for l in &links {
             entries.push(link_entry(&ctx, l, false));
@@ -142,6 +143,8 @@ pub fn run(args: &ScanArgs) -> Result<Report> {
         unreadable,
         ignored_by_file: 0,
         cache_state_count,
+        depth_truncated: walked.depth_truncated,
+        skipped_too_large,
         committed_findings,
         missing_on_machine,
         notes,
@@ -232,7 +235,12 @@ fn decide(ctx: &Ctx, path: &Path, rel: &Path) -> Tracking {
 }
 
 /// A regular file: classify, decide tracking and drift, scan for secrets.
-fn file_entry(ctx: &Ctx, path: &Path, unreadable: &mut Vec<PathBuf>) -> Entry {
+fn file_entry(
+    ctx: &Ctx,
+    path: &Path,
+    unreadable: &mut Vec<PathBuf>,
+    too_large: &mut usize,
+) -> Entry {
     let rel = home_rel(ctx.home, path);
     let (app, kind) = classify(&rel, &ctx.rules);
     let mut entry = Entry {
@@ -257,8 +265,13 @@ fn file_entry(ctx: &Ctx, path: &Path, unreadable: &mut Vec<PathBuf>) -> Entry {
     entry.tracking = Some(tracking);
     let in_preferences = path.starts_with(ctx.home) && rel.starts_with(PREFERENCES);
     if !in_preferences {
-        match scan_file(path, &ctx.secrets) {
-            Ok(found) => entry.findings = found,
+        match scan_file_detailed(path, &ctx.secrets) {
+            Ok(outcome) => {
+                if outcome.skipped == Some(SkipReason::TooLarge) {
+                    *too_large += 1;
+                }
+                entry.findings = outcome.findings;
+            }
             Err(_) => unreadable.push(path.to_path_buf()),
         }
     }

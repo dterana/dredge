@@ -4,6 +4,8 @@ use std::fs;
 use std::os::unix::fs::symlink;
 use std::path::{Path, PathBuf};
 
+use std::io::Read as _;
+
 use assert_cmd::Command as Bin;
 use clap::Parser;
 use common::Fixture;
@@ -676,4 +678,155 @@ fn unit_app_label_comes_from_an_entry_of_the_unit_kind() {
     assert_eq!(claude.app.as_deref(), Some("claude"));
     let out = render_human(&rep, false, false);
     assert!(!out.contains("atuin"), "{out}");
+}
+
+const BIG_LINE_FAKE: &str = "FAKE_TOKEN_9f8e7d6c5b4a3210";
+
+fn big_secret_file(e: &Env, rel: &str) {
+    let mut data = format!("authtoken: {BIG_LINE_FAKE}\n").into_bytes();
+    data.resize(dredge::secrets::MAX_SCAN_BYTES as usize + 1, b'a');
+    let p = e.home().join(rel);
+    fs::create_dir_all(p.parent().unwrap()).unwrap();
+    fs::write(p, data).unwrap();
+}
+
+#[test]
+fn over_1mib_file_is_counted_not_scanned_and_sibling_is_reported() {
+    let e = Env::new();
+    big_secret_file(&e, ".config/big/huge.yml");
+    e.h(
+        ".config/big/small.yml",
+        &format!("authtoken: {BIG_LINE_FAKE}\n"),
+    );
+    let rep = e.run(&e.args(&[]));
+    assert_eq!(rep.skipped_too_large, 1);
+    assert_eq!(rep.depth_truncated, 0);
+    let findings: Vec<_> = rep.units.iter().flat_map(|u| u.findings.iter()).collect();
+    assert_eq!(findings.len(), 1);
+    assert!(findings[0].path.ends_with("small.yml"));
+    // Exit code is not affected by the counters alone.
+    let clean = Env::new();
+    big_secret_file(&clean, ".config/big/huge.yml");
+    clean.bin().assert().code(0);
+}
+
+#[test]
+fn binary_and_symlink_skips_are_not_counted() {
+    let e = Env::new();
+    let mut bin = b"data".to_vec();
+    bin.push(0);
+    bin.resize(2_000, 1);
+    let p = e.home().join(".config/b/blob.dat");
+    fs::create_dir_all(p.parent().unwrap()).unwrap();
+    fs::write(&p, bin).unwrap();
+    symlink(&p, e.home().join(".config/b/link")).unwrap();
+    let rep = e.run(&e.args(&[]));
+    assert_eq!(rep.skipped_too_large, 0);
+}
+
+#[test]
+fn depth_truncated_reaches_the_report() {
+    let e = Env::new();
+    e.h(".config/deep/a/b/c/d/e/x/y.txt", "x\n");
+    let rep = e.run(&e.args(&[]));
+    assert_eq!(rep.depth_truncated, 1);
+}
+
+#[test]
+fn human_skip_lines_appear_only_when_counters_are_non_zero() {
+    let rep = Report {
+        home: PathBuf::from("/h"),
+        depth_truncated: 3,
+        skipped_too_large: 2,
+        ..Report::default()
+    };
+    let out = render_human(&rep, false, false);
+    assert!(
+        out.contains("\n  3 directories deeper than 6 levels were not scanned\n"),
+        "{out}"
+    );
+    assert!(
+        out.contains("\n  2 files over 1 MiB were not scanned for secrets\n"),
+        "{out}"
+    );
+    assert_order(&out, &["IGNORED", "directories deeper", "files over"]);
+
+    let one = Report {
+        home: PathBuf::from("/h"),
+        depth_truncated: 1,
+        skipped_too_large: 1,
+        ..Report::default()
+    };
+    let out = render_human(&one, false, false);
+    assert!(
+        out.contains("  1 directory deeper than 6 levels was not scanned\n"),
+        "{out}"
+    );
+    assert!(
+        out.contains("  1 file over 1 MiB was not scanned for secrets\n"),
+        "{out}"
+    );
+
+    let zero = render_human(
+        &Report {
+            home: PathBuf::from("/h"),
+            ..Report::default()
+        },
+        false,
+        false,
+    );
+    assert!(!zero.contains("deeper than"), "{zero}");
+    assert!(!zero.contains("not scanned"), "{zero}");
+}
+
+#[test]
+fn skip_lines_contain_only_numbers_and_fixed_text() {
+    let e = Env::new();
+    big_secret_file(&e, ".config/big/huge.yml");
+    e.h(".config/deep/a/b/c/d/e/x/y.txt", "x\n");
+    let rep = e.run(&e.args(&[]));
+    assert_eq!((rep.depth_truncated, rep.skipped_too_large), (1, 1));
+    let out = render_human(&rep, false, true);
+    let lines: Vec<&str> = out.lines().filter(|l| l.contains("not scanned")).collect();
+    assert_eq!(
+        lines,
+        vec![
+            "  1 directory deeper than 6 levels was not scanned",
+            "  1 file over 1 MiB was not scanned for secrets",
+        ]
+    );
+    assert_no_secret(&out);
+    assert!(!out.contains(BIG_LINE_FAKE));
+    assert!(!render_json(&rep).contains(BIG_LINE_FAKE));
+}
+
+#[test]
+fn json_has_skip_counters_always() {
+    let clean = Env::new();
+    let v: serde_json::Value =
+        serde_json::from_str(&render_json(&clean.run(&clean.args(&[])))).unwrap();
+    assert_eq!(v["schema_version"], 1);
+    assert_eq!(v["depth_truncated_dirs"], 0);
+    assert_eq!(v["skipped_too_large"], 0);
+
+    let e = Env::new();
+    big_secret_file(&e, ".config/big/huge.yml");
+    e.h(".config/deep/a/b/c/d/e/x/y.txt", "x\n");
+    let out = e.bin().arg("--json").output().unwrap();
+    let v: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
+    assert_eq!(v["depth_truncated_dirs"], 1);
+    assert_eq!(v["skipped_too_large"], 1);
+}
+
+#[test]
+fn read_capped_flags_content_past_the_cap_even_when_lstat_was_small() {
+    use dredge::secrets::{read_capped, MAX_SCAN_BYTES};
+    // An endless reader stands in for a file that grew after its size check.
+    let mut endless = std::io::repeat(b'a');
+    let mut buf = Vec::new();
+    assert!(read_capped(&mut endless, &mut buf).unwrap());
+    assert_eq!(buf.len() as u64, MAX_SCAN_BYTES + 1);
+    let mut exact = std::io::repeat(b'a').take(MAX_SCAN_BYTES);
+    let mut buf = Vec::new();
+    assert!(!read_capped(&mut exact, &mut buf).unwrap());
 }

@@ -16,6 +16,8 @@ pub struct WalkResult {
     pub symlinks: Vec<PathBuf>,
     /// Extra roots that were not walked because another root already covers them.
     pub skipped: Vec<SkippedRoot>,
+    /// Directories listed but not entered because they sit at `MAX_DEPTH`.
+    pub depth_truncated: usize,
 }
 
 #[derive(Debug)]
@@ -309,8 +311,12 @@ fn walk_dir(
             result.symlinks.push(path);
         } else if ft.is_file() {
             files.push(path);
-        } else if ft.is_dir() && depth < MAX_DEPTH {
-            walk_dir(&path, depth + 1, prune, files, result);
+        } else if ft.is_dir() {
+            if depth < MAX_DEPTH {
+                walk_dir(&path, depth + 1, prune, files, result);
+            } else {
+                result.depth_truncated += 1;
+            }
         }
     }
 }

@@ -14,6 +14,8 @@ use owo_colors::OwoColorize;
 use serde_json::{json, Value};
 
 use crate::model::{Finding, Kind, Report, Tracking, Unit};
+use crate::secrets::MAX_SCAN_BYTES;
+use crate::walk::MAX_DEPTH;
 
 /// Unknown units shown without `--all`.
 pub const UNKNOWN_CAP: usize = 20;
@@ -296,6 +298,33 @@ pub fn render_human(report: &Report, color: bool, all: bool) -> String {
         thousands(report.cache_state_count),
         thousands(report.ignored_by_file)
     );
+    if report.depth_truncated > 0 {
+        let n = report.depth_truncated;
+        let (noun, verb) = if n == 1 {
+            ("directory", "was")
+        } else {
+            ("directories", "were")
+        };
+        let _ = writeln!(
+            out.buf,
+            "  {} {noun} deeper than {MAX_DEPTH} levels {verb} not scanned",
+            thousands(n)
+        );
+    }
+    if report.skipped_too_large > 0 {
+        let n = report.skipped_too_large;
+        let (noun, verb) = if n == 1 {
+            ("file", "was")
+        } else {
+            ("files", "were")
+        };
+        let _ = writeln!(
+            out.buf,
+            "  {} {noun} over {} MiB {verb} not scanned for secrets",
+            thousands(n),
+            MAX_SCAN_BYTES / (1024 * 1024)
+        );
+    }
 
     if all {
         let lines: Vec<String> = report
@@ -361,6 +390,8 @@ pub fn render_json(report: &Report) -> String {
             "cache_state_items": report.cache_state_count,
             "dredgeignore": report.ignored_by_file,
         },
+        "depth_truncated_dirs": report.depth_truncated,
+        "skipped_too_large": report.skipped_too_large,
     });
     let mut s = serde_json::to_string_pretty(&value)
         .unwrap_or_else(|_| String::from("{\"schema_version\": 1}"));

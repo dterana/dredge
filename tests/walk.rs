@@ -385,3 +385,23 @@ fn extra_root_inside_excluded_dir_is_skipped_with_note() {
     assert!(r.skipped[0].dotfiles);
     assert!(r.units.iter().all(|u| !u.path.starts_with(&dots)));
 }
+
+#[test]
+fn depth_truncated_counts_exact_unentered_dirs() {
+    let fx = Fixture::new();
+    // Level 6 directories under the unit: listed, not entered.
+    fx.file("root/.u/a/b/c/d/e/keep.txt");
+    fx.file("root/.u/a/b/c/d/e/f1/x.txt");
+    fx.file("root/.u/a/b/c/d/e/f2/g/y.txt");
+    fx.dir("root/.u/a/b/c/d/e/f3");
+    // A symlinked dir and a file at level 6 are not counted.
+    let outside = fx.dir("outside");
+    fx.symlink("root/.u/a/b/c/d/e/link", &outside);
+    // A shallower tree adds nothing.
+    fx.file("root/.v/a/b/z.txt");
+    let root = fx.root().join("root");
+    let r = walk::scan(&[Root::extra(root.clone())], &[]);
+    assert_eq!(r.depth_truncated, 3);
+    let shallow = walk::scan(&[Root::extra(fx.root().join("root/.v"))], &[]);
+    assert_eq!(shallow.depth_truncated, 0);
+}

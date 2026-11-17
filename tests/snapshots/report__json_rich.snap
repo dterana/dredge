@@ -11,6 +11,7 @@ expression: normalized
       "rule_id": "github-token"
     }
   ],
+  "depth_truncated_dirs": 0,
   "dotfiles": "<DOTS>",
   "home": "<HOME>",
   "ignored": {
@@ -23,6 +24,7 @@ expression: normalized
     "<HOME>/local.env"
   ],
   "schema_version": 1,
+  "skipped_too_large": 0,
   "units": [
     {
       "app": null,

@@ -109,27 +109,70 @@ pub fn probe_is_binary<R: Read>(r: &mut R) -> io::Result<(bool, Vec<u8>)> {
     Ok((binary, chunk))
 }
 
+/// Appends the rest of `r` to `buf`, reading at most one byte past
+/// `MAX_SCAN_BYTES` in total. Returns true when the content exceeds the cap,
+/// which also covers a file that grew after its size was checked.
+pub fn read_capped<R: Read>(r: &mut R, buf: &mut Vec<u8>) -> io::Result<bool> {
+    let remaining = (MAX_SCAN_BYTES + 1).saturating_sub(buf.len() as u64);
+    r.take(remaining).read_to_end(buf)?;
+    Ok(buf.len() as u64 > MAX_SCAN_BYTES)
+}
+
+/// Why a file was not scanned.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SkipReason {
+    /// Over `MAX_SCAN_BYTES`.
+    TooLarge,
+    /// Contains a NUL byte.
+    Binary,
+    /// Not a regular file (symlink, FIFO, device) or gone before it was opened.
+    NotRegular,
+}
+
+/// Findings plus the reason the file was skipped, if it was.
+#[derive(Debug, Default)]
+pub struct ScanOutcome {
+    pub findings: Vec<Finding>,
+    pub skipped: Option<SkipReason>,
+}
+
+fn skipped(reason: SkipReason) -> io::Result<ScanOutcome> {
+    Ok(ScanOutcome {
+        findings: Vec::new(),
+        skipped: Some(reason),
+    })
+}
+
 /// Scans one file. Findings carry only rule id, path and 1-based line.
-pub fn scan_file(path: &Path, rules: &SecretRules) -> std::io::Result<Vec<Finding>> {
+pub fn scan_file(path: &Path, rules: &SecretRules) -> io::Result<Vec<Finding>> {
+    scan_file_detailed(path, rules).map(|o| o.findings)
+}
+
+/// Like `scan_file`, and also says why a file was skipped.
+pub fn scan_file_detailed(path: &Path, rules: &SecretRules) -> io::Result<ScanOutcome> {
     let Some(set) = &rules.set else {
-        return Ok(Vec::new());
+        return Ok(ScanOutcome::default());
     };
     let meta = fs::symlink_metadata(path)?;
-    if !meta.file_type().is_file() || meta.len() > MAX_SCAN_BYTES {
-        return Ok(Vec::new());
+    if !meta.file_type().is_file() {
+        return skipped(SkipReason::NotRegular);
+    }
+    if meta.len() > MAX_SCAN_BYTES {
+        return skipped(SkipReason::TooLarge);
     }
     let Some(file) = open_regular(path)? else {
-        return Ok(Vec::new());
+        return skipped(SkipReason::NotRegular);
     };
     let mut file = file;
     let (binary, mut buf) = probe_is_binary(&mut file)?;
     if binary {
-        return Ok(Vec::new());
+        return skipped(SkipReason::Binary);
     }
-    let remaining = (MAX_SCAN_BYTES + 1).saturating_sub(buf.len() as u64);
-    file.take(remaining).read_to_end(&mut buf)?;
-    if buf.len() as u64 > MAX_SCAN_BYTES || buf.contains(&0) {
-        return Ok(Vec::new());
+    if read_capped(&mut file, &mut buf)? {
+        return skipped(SkipReason::TooLarge);
+    }
+    if buf.contains(&0) {
+        return skipped(SkipReason::Binary);
     }
 
     let mut findings = Vec::new();
@@ -145,5 +188,8 @@ pub fn scan_file(path: &Path, rules: &SecretRules) -> std::io::Result<Vec<Findin
             }
         }
     }
-    Ok(findings)
+    Ok(ScanOutcome {
+        findings,
+        skipped: None,
+    })
 }
