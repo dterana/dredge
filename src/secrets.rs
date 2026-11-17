@@ -150,9 +150,9 @@ pub fn scan_file(path: &Path, rules: &SecretRules) -> io::Result<Vec<Finding>> {
 
 /// Like `scan_file`, and also says why a file was skipped.
 pub fn scan_file_detailed(path: &Path, rules: &SecretRules) -> io::Result<ScanOutcome> {
-    let Some(set) = &rules.set else {
+    if rules.set.is_none() {
         return Ok(ScanOutcome::default());
-    };
+    }
     let meta = fs::symlink_metadata(path)?;
     if !meta.file_type().is_file() {
         return skipped(SkipReason::NotRegular);
@@ -164,11 +164,24 @@ pub fn scan_file_detailed(path: &Path, rules: &SecretRules) -> io::Result<ScanOu
         return skipped(SkipReason::NotRegular);
     };
     let mut file = file;
-    let (binary, mut buf) = probe_is_binary(&mut file)?;
+    scan_reader(&mut file, path, rules)
+}
+
+/// Scans an already opened reader: probes the first chunk for NUL, reads the
+/// rest up to the cap, then scans lines. `path` only labels the findings.
+pub fn scan_reader<R: Read>(
+    r: &mut R,
+    path: &Path,
+    rules: &SecretRules,
+) -> io::Result<ScanOutcome> {
+    let Some(set) = &rules.set else {
+        return Ok(ScanOutcome::default());
+    };
+    let (binary, mut buf) = probe_is_binary(r)?;
     if binary {
         return skipped(SkipReason::Binary);
     }
-    if read_capped(&mut file, &mut buf)? {
+    if read_capped(r, &mut buf)? {
         return skipped(SkipReason::TooLarge);
     }
     if buf.contains(&0) {

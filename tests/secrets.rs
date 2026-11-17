@@ -227,3 +227,60 @@ fn secret_after_probe_window_in_text_file_is_found() {
     assert_eq!(found.len(), 1);
     assert_eq!(found[0].line, 2);
 }
+
+#[test]
+fn scan_reader_stops_an_endless_nul_stream_at_the_probe() {
+    use dredge::secrets::{scan_reader, SkipReason, BINARY_PROBE_BYTES};
+    let mut r = CountingReader { byte: 0, served: 0 };
+    let out = scan_reader(&mut r, std::path::Path::new("x"), &SecretRules::embedded()).unwrap();
+    assert_eq!(out.skipped, Some(SkipReason::Binary));
+    assert!(out.findings.is_empty());
+    assert!(r.served <= BINARY_PROBE_BYTES, "served {}", r.served);
+}
+
+/// Serves a secret line, then filler forever, counting bytes served.
+struct SecretThenFiller {
+    head: Vec<u8>,
+    pos: usize,
+    served: usize,
+}
+
+impl std::io::Read for SecretThenFiller {
+    fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
+        for b in buf.iter_mut() {
+            *b = self.head.get(self.pos).copied().unwrap_or(b'a');
+            self.pos += 1;
+        }
+        self.served += buf.len();
+        Ok(buf.len())
+    }
+}
+
+#[test]
+fn scan_reader_text_path_is_bounded_and_finds_the_secret() {
+    use dredge::secrets::{scan_reader, SkipReason};
+    // Under the cap the secret is found; the stream is bounded by cap + 1.
+    let mut r = SecretThenFiller {
+        head: format!("authtoken: {FAKE}\n").into_bytes(),
+        pos: 0,
+        served: 0,
+    };
+    let out = scan_reader(&mut r, std::path::Path::new("x"), &SecretRules::embedded()).unwrap();
+    // The endless filler exceeds the cap, so it is TooLarge, and never read past cap + 1.
+    assert_eq!(out.skipped, Some(SkipReason::TooLarge));
+    assert_eq!(r.served as u64, MAX_SCAN_BYTES + 1);
+
+    // A finite text reader within the cap finds the secret.
+    let mut data = vec![b'a'; 20_000];
+    data.push(b'\n');
+    data.extend_from_slice(format!("authtoken: {FAKE}\n").as_bytes());
+    let out = scan_reader(
+        &mut std::io::Cursor::new(data),
+        std::path::Path::new("x"),
+        &SecretRules::embedded(),
+    )
+    .unwrap();
+    assert_eq!(out.skipped, None);
+    assert_eq!(out.findings.len(), 1);
+    assert_eq!(out.findings[0].line, 2);
+}
