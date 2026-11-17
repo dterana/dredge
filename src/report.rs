@@ -356,7 +356,7 @@ pub fn render_json(report: &Report) -> String {
         "committed_secrets": report.committed_findings.iter().map(finding_json).collect::<Vec<_>>(),
         "units": units,
         "unreadable": report.unreadable.iter().map(|p| lossy(p)).collect::<Vec<_>>(),
-        "missing_on_machine": report.missing_on_machine.iter().map(|p| lossy(p)).collect::<Vec<_>>(),
+        "missing_on_machine": report.missing_on_machine.iter().map(|p| lossy(&report.home.join(p))).collect::<Vec<_>>(),
         "ignored": {
             "cache_state_items": report.cache_state_count,
             "dredgeignore": report.ignored_by_file,

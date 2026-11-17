@@ -18,9 +18,9 @@ expression: normalized
     "dredgeignore": 0
   },
   "missing_on_machine": [
-    ".envrc",
-    ".vimrc",
-    "local.env"
+    "<HOME>/.envrc",
+    "<HOME>/.vimrc",
+    "<HOME>/local.env"
   ],
   "schema_version": 1,
   "units": [

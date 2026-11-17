@@ -173,11 +173,13 @@ fn json_has_schema_version_and_same_findings() {
         .as_str()
         .unwrap()
         .ends_with("shell/.envrc"));
-    assert!(v["missing_on_machine"]
-        .as_array()
-        .unwrap()
+    // Absolute, like every other path in schema 1.
+    let vimrc = rep.home.join(".vimrc").to_string_lossy().into_owned();
+    let missing = v["missing_on_machine"].as_array().unwrap();
+    assert!(missing.iter().any(|m| *m == *vimrc), "{missing:?}");
+    assert!(missing
         .iter()
-        .any(|m| m == ".vimrc"));
+        .all(|m| Path::new(m.as_str().unwrap()).is_absolute()));
     let home = rep.home.to_string_lossy().into_owned();
     let normalized = render_json(&rep).replace(&home, "<HOME>").replace(
         &rep.dotfiles.clone().unwrap().to_string_lossy().into_owned(),
