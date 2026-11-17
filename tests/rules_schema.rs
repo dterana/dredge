@@ -397,3 +397,38 @@ fn no_config_rule_sits_under_a_directory_that_is_not_entered() {
         }
     }
 }
+
+#[test]
+fn vscode_history_storage_and_extensions_are_state() {
+    use dredge::classify::prunes_dir;
+    let rules = Rules::embedded();
+    let state = (Some("vscode".to_string()), Kind::State);
+    let code = "Library/Application Support/Code/User";
+    for p in [
+        format!("{code}/History/-1a2b3c4d/entries.json"),
+        format!("{code}/History/-1a2b3c4d/AbCd.ts"),
+        format!("{code}/workspaceStorage/0123abcd/state.vscdb"),
+        format!("{code}/globalStorage/storage.json"),
+        format!("{code}/globalStorage/ms-python.python/x/y.json"),
+        ".vscode/extensions/ms-python.python-2026.1.0/package.json".to_string(),
+        ".vscode/extensions/extensions.json".to_string(),
+    ] {
+        assert_eq!(class(&p), state, "{p}");
+    }
+    for dir in [
+        format!("{code}/History"),
+        format!("{code}/workspaceStorage"),
+        format!("{code}/globalStorage"),
+        ".vscode/extensions".to_string(),
+    ] {
+        assert!(prunes_dir(Path::new(&dir), &rules), "{dir}");
+    }
+    // The user's own settings stay config, and the rest of `.vscode` and of
+    // `User` is not swept into state.
+    let config = (Some("vscode".to_string()), Kind::Config);
+    assert_eq!(class(&format!("{code}/settings.json")), config);
+    assert_eq!(class(&format!("{code}/snippets/rust.json")), config);
+    assert!(!prunes_dir(Path::new(code), &rules));
+    assert!(!prunes_dir(Path::new(".vscode"), &rules));
+    assert_eq!(class(".vscode/argv.json").1, Kind::Unknown);
+}

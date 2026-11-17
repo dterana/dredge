@@ -1242,3 +1242,54 @@ fn symlinks_under_a_root_inside_a_pruned_dir_are_reported() {
     let all = render_human(&rep, false, true);
     assert!(all.contains("~/.cache/foo/link"), "{all}");
 }
+
+// ---- VS Code local history, storage and extensions are state ----
+
+#[test]
+fn vscode_history_and_extensions_are_not_listed_or_scanned() {
+    let e = Env::new();
+    let code = "Library/Application Support/Code/User";
+    let token = format!("export T={GH_VALUE}\n");
+    let settings = e.h(&format!("{code}/settings.json"), &token);
+    e.h(&format!("{code}/History/-1a2b/entries.json"), &token);
+    e.h(&format!("{code}/History/-1a2b/AbCd.env"), &token);
+    e.h(&format!("{code}/workspaceStorage/0123/state.txt"), &token);
+    e.h(&format!("{code}/globalStorage/ext/token.txt"), &token);
+    e.h(".vscode/extensions/acme.ext-1.0.0/creds.txt", &token);
+    e.h(".vscode/argv.json", "{}\n");
+    let rep = e.run(&e.args(&["--all"]));
+    let findings: Vec<&PathBuf> = rep
+        .units
+        .iter()
+        .flat_map(|u| u.findings.iter().map(|f| &f.path))
+        .collect();
+    // Only the sibling settings file is scanned, and it is config.
+    assert_eq!(findings.len(), 1);
+    assert!(*findings[0] == settings);
+    let code_unit = rep
+        .units
+        .iter()
+        .find(|u| u.path == e.home().join("Library/Application Support/Code"))
+        .unwrap();
+    assert_eq!(code_unit.kind, Kind::Config);
+    assert_eq!(code_unit.app.as_deref(), Some("vscode"));
+    // History, workspaceStorage, globalStorage and .vscode/extensions.
+    assert_eq!(rep.pruned_dirs, 4);
+    for all in [false, true] {
+        let out = render_human(&rep, false, all);
+        for hidden in ["History", "workspaceStorage", "globalStorage", "extensions"] {
+            assert!(!out.contains(hidden), "{hidden}: {out}");
+        }
+    }
+    let json = render_json(&rep);
+    for hidden in [
+        "History",
+        "workspaceStorage",
+        "globalStorage",
+        "extensions/",
+    ] {
+        assert!(!json.contains(hidden), "{hidden}");
+    }
+    assert_no_secret(&render_human(&rep, true, true));
+    assert_no_secret(&json);
+}

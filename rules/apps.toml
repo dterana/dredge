@@ -103,8 +103,14 @@ description = "Visual Studio Code caches"
 [[rule]]
 app = "vscode"
 kind = "state"
-globs = ["Library/Application Support/Code/logs/**", "Library/Application Support/Code/User/workspaceStorage/**", "Library/Application Support/Code/User/globalStorage/**"]
-description = "Visual Studio Code logs and per-workspace state"
+globs = ["Library/Application Support/Code/logs/**", "Library/Application Support/Code/User/workspaceStorage/**", "Library/Application Support/Code/User/globalStorage/**", "Library/Application Support/Code/User/History/**"]
+description = "Visual Studio Code logs, per-workspace and global extension state, and local file history snapshots"
+
+[[rule]]
+app = "vscode"
+kind = "state"
+globs = [".vscode/extensions/**"]
+description = "Visual Studio Code installed extensions"
 
 [[rule]]
 app = "zed"
