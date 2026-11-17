@@ -6,7 +6,7 @@ use std::fs;
 use std::io::Read;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicUsize, Ordering};
-use std::sync::Mutex;
+use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::Duration;
 
@@ -206,10 +206,12 @@ fn run_inner(args: &ScanArgs, progress: &mut Progress) -> Result<Report> {
     // scanned, and reported, once.
     let mut committed_findings = Vec::new();
     let mut seen = HashSet::new();
+    let gitignores = GitignoreCache::default();
     for d in &dotfiles {
         committed_findings.extend(scan_committed(
             d,
             &ctx.secrets,
+            Arc::clone(&gitignores),
             &mut seen,
             &mut unreadable,
             progress,
@@ -724,19 +726,23 @@ fn read_gitignore(base: &Path) -> Option<Gitignore> {
     builder.build().ok().filter(|g| !g.is_empty())
 }
 
+/// Matchers for the `.gitignore` of each directory, shared by every
+/// committed walk of one run, so each file is read at most once.
+type GitignoreCache = Arc<Mutex<HashMap<PathBuf, Option<Gitignore>>>>;
+
 /// The `.gitignore` files that apply to one committed walk: those of every
 /// directory from `top` (the enclosing git root, or the walked dir when
-/// there is none) down to each entry. Each file is read at most once.
+/// there is none) down to each entry.
 struct GitIgnores {
     top: PathBuf,
-    cache: HashMap<PathBuf, Option<Gitignore>>,
+    cache: GitignoreCache,
 }
 
 impl GitIgnores {
-    fn new(dir: &Path) -> GitIgnores {
+    fn new(dir: &Path, cache: GitignoreCache) -> GitIgnores {
         GitIgnores {
             top: git_root(dir).unwrap_or(dir).to_path_buf(),
-            cache: HashMap::new(),
+            cache,
         }
     }
 
@@ -744,13 +750,13 @@ impl GitIgnores {
     /// directory above it is excluded: the deepest `.gitignore`, from the
     /// entry's own directory up to `top`, with a matching pattern decides,
     /// and inside one file the last matching pattern wins.
-    fn ignored(&mut self, path: &Path, is_dir: bool) -> bool {
+    fn ignored(&self, path: &Path, is_dir: bool) -> bool {
         let Some(parent) = path.parent() else {
             return false;
         };
+        let mut cache = self.cache.lock().unwrap_or_else(|p| p.into_inner());
         for dir in parent.ancestors().take_while(|d| d.starts_with(&self.top)) {
-            let gi = self
-                .cache
+            let gi = cache
                 .entry(dir.to_path_buf())
                 .or_insert_with(|| read_gitignore(dir));
             if let Some(gi) = gi {
@@ -767,7 +773,7 @@ impl GitIgnores {
     /// True if `dir` or a directory between `top` and it is excluded. Git
     /// then ignores everything inside, whatever a negation says, so each
     /// directory is checked from the top down.
-    fn excluded_from_top(&mut self, dir: &Path) -> bool {
+    fn excluded_from_top(&self, dir: &Path) -> bool {
         let Ok(rel) = dir.strip_prefix(&self.top) else {
             return false;
         };
@@ -811,16 +817,16 @@ fn committed_walk_builder(dir: &Path) -> WalkBuilder {
 fn scan_committed(
     dir: &Path,
     rules: &SecretRules,
+    gitignores: GitignoreCache,
     seen: &mut HashSet<PathBuf>,
     unreadable: &mut Vec<PathBuf>,
     progress: &mut Progress,
     files_done: &mut usize,
 ) -> Vec<Finding> {
-    let mut ignores = GitIgnores::new(dir);
+    let ignores = GitIgnores::new(dir, gitignores);
     if ignores.excluded_from_top(dir) {
         return Vec::new();
     }
-    let ignores = Mutex::new(ignores);
     // The crate reads no ignore file of its own: every source is off, so
     // `.gitignore` files are read only by `read_gitignore` in the filter.
     let walker = committed_walk_builder(dir)
@@ -828,9 +834,7 @@ fn scan_committed(
             if e.file_name() == ".git" {
                 return false;
             }
-            let is_dir = e.file_type().is_some_and(|t| t.is_dir());
-            let mut ignores = ignores.lock().unwrap_or_else(|p| p.into_inner());
-            !ignores.ignored(e.path(), is_dir)
+            !ignores.ignored(e.path(), e.file_type().is_some_and(|t| t.is_dir()))
         })
         .build();
     let mut findings = Vec::new();
@@ -1022,6 +1026,27 @@ mod tests {
     #[test]
     fn default_jobs_is_between_one_and_eight() {
         assert!((1..=MAX_DEFAULT_JOBS).contains(&default_jobs()));
+    }
+
+    #[test]
+    fn gitignore_files_are_read_once_per_run() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = fs::canonicalize(tmp.path()).unwrap();
+        fs::create_dir_all(root.join(".git")).unwrap();
+        fs::create_dir_all(root.join("a")).unwrap();
+        fs::create_dir_all(root.join("b")).unwrap();
+        fs::write(root.join(".gitignore"), "*.env\n").unwrap();
+        let cache = GitignoreCache::default();
+        let first = GitIgnores::new(&root.join("a"), Arc::clone(&cache));
+        assert!(first.ignored(&root.join("a/x.env"), false));
+        assert!(!first.ignored(&root.join("a/x.txt"), false));
+        // Gone from disk, still answered from the shared cache.
+        fs::remove_file(root.join(".gitignore")).unwrap();
+        let second = GitIgnores::new(&root.join("b"), Arc::clone(&cache));
+        assert!(second.ignored(&root.join("b/y.env"), false));
+        // A fresh cache reads the disk again.
+        let fresh = GitIgnores::new(&root.join("b"), GitignoreCache::default());
+        assert!(!fresh.ignored(&root.join("b/y.env"), false));
     }
 
     #[test]
