@@ -27,6 +27,7 @@ dredge scan --dotfiles ~/dotfiles
 | `--all` | Show everything, including tracked items and known state and cache items. |
 | `--json` | Emit JSON instead of the human report. |
 | `--no-color` | Disable colored output. |
+| `--no-progress` | Never show the progress line on stderr. |
 | `--fail-on <LIST>` | Comma separated conditions that give a non-zero exit: `secrets`, `drift`, `untracked`. Default `secrets,drift`. |
 
 By default dredge walks the top level dot entries of your home directory plus `~/.config`, `~/Library/Application Support` and `~/Library/Preferences`.

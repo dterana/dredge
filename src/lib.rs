@@ -6,6 +6,7 @@ pub mod dredgeignore;
 pub mod exit;
 pub mod layout;
 pub mod model;
+pub mod progress;
 pub mod report;
 pub mod rules;
 pub mod scan;

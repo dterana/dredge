@@ -12,6 +12,7 @@ use crate::cli::{LayoutArg, ScanArgs};
 use crate::dredgeignore::IgnoreList;
 use crate::layout::{self, Index};
 use crate::model::{Drift, Finding, Kind, Report, Tracking, Unit};
+use crate::progress::Progress;
 use crate::rules::Rules;
 use crate::secrets::{scan_file, scan_file_detailed, SecretRules, SkipReason};
 use crate::track;
@@ -45,7 +46,20 @@ struct Entry {
     findings: Vec<Finding>,
 }
 
+/// Runs the scan without any progress output.
 pub fn run(args: &ScanArgs) -> Result<Report> {
+    run_with_progress(args, &mut Progress::disabled())
+}
+
+/// Runs the scan, reporting the number of files processed to `progress`. The
+/// progress line is cleared before this returns, on success and on error.
+pub fn run_with_progress(args: &ScanArgs, progress: &mut Progress) -> Result<Report> {
+    let result = run_inner(args, progress);
+    progress.finish();
+    result
+}
+
+fn run_inner(args: &ScanArgs, progress: &mut Progress) -> Result<Report> {
     let home = resolve_home(args.home.as_deref())?;
     let (dotfiles, layout_arg) = resolve_dotfiles(args, &home)?;
 
@@ -105,10 +119,13 @@ pub fn run(args: &ScanArgs) -> Result<Report> {
     let mut units = Vec::new();
     let mut cache_state_count = 0;
     let mut skipped_too_large = 0;
+    let mut files_done = 0;
     for (uf, links) in walked.units.into_iter().zip(nested) {
         let mut entries: Vec<Entry> = Vec::new();
         for f in &uf.files {
             entries.push(file_entry(&ctx, f, &mut unreadable, &mut skipped_too_large));
+            files_done += 1;
+            progress.tick(files_done);
         }
         for l in &links {
             entries.push(link_entry(&ctx, l, false));
@@ -126,7 +143,7 @@ pub fn run(args: &ScanArgs) -> Result<Report> {
     units.sort_by(|a, b| a.path.cmp(&b.path));
 
     let mut committed_findings = match &dotfiles {
-        Some(d) => scan_committed(d, &ctx.secrets, &mut unreadable),
+        Some(d) => scan_committed(d, &ctx.secrets, &mut unreadable, progress, &mut files_done),
         None => Vec::new(),
     };
     committed_findings.sort_by(|a, b| (&a.path, a.line).cmp(&(&b.path, b.line)));
@@ -361,7 +378,13 @@ fn assemble(
 
 /// Scans the dotfiles working tree, honoring only that repo's `.gitignore`.
 /// Regular files only; symlinks are not followed; `.git` is skipped.
-fn scan_committed(dir: &Path, rules: &SecretRules, unreadable: &mut Vec<PathBuf>) -> Vec<Finding> {
+fn scan_committed(
+    dir: &Path,
+    rules: &SecretRules,
+    unreadable: &mut Vec<PathBuf>,
+    progress: &mut Progress,
+    files_done: &mut usize,
+) -> Vec<Finding> {
     let walker = WalkBuilder::new(dir)
         .standard_filters(false)
         .git_ignore(true)
@@ -389,6 +412,8 @@ fn scan_committed(dir: &Path, rules: &SecretRules, unreadable: &mut Vec<PathBuf>
         if !entry.file_type().is_some_and(|t| t.is_file()) {
             continue;
         }
+        *files_done += 1;
+        progress.tick(*files_done);
         match scan_file(entry.path(), rules) {
             Ok(found) => findings.extend(found.into_iter().map(|mut f| {
                 f.committed = true;

@@ -6,12 +6,16 @@ use std::process::ExitCode;
 use clap::Parser;
 
 use dredge::cli::{Cli, Command};
+use dredge::progress::{self, Progress};
 use dredge::{exit, report, scan};
 
 fn main() -> ExitCode {
     let cli = Cli::parse();
     let Command::Scan(args) = cli.command;
-    let rep = match scan::run(&args) {
+    let stderr = std::io::stderr();
+    let show = !args.no_progress && stderr.is_terminal();
+    let mut progress = Progress::new(Box::new(stderr), show, progress::MIN_INTERVAL);
+    let rep = match scan::run_with_progress(&args, &mut progress) {
         Ok(r) => r,
         Err(err) => {
             say(&format!("dredge: {err:#}"));

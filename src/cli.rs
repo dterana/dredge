@@ -51,6 +51,10 @@ pub struct ScanArgs {
     #[arg(long)]
     pub json: bool,
 
+    /// Never show the progress line on stderr
+    #[arg(long)]
+    pub no_progress: bool,
+
     /// Disable colored output
     #[arg(long)]
     pub no_color: bool,

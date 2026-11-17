@@ -222,6 +222,11 @@ fn assert_no_leak(label: &str, r: &Run) {
         se.is_empty(),
         "{label}: stderr leaked secret indexes {se:?}"
     );
+    // Stderr is a pipe here, so the progress line must never be written.
+    assert!(
+        !r.stderr.contains('\r') && !r.stderr.contains("scanned"),
+        "{label}: progress output on a piped stderr"
+    );
 }
 
 /// Restores permissions on drop, on every exit path.

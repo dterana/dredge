@@ -830,3 +830,39 @@ fn read_capped_flags_content_past_the_cap_even_when_lstat_was_small() {
     let mut buf = Vec::new();
     assert!(!read_capped(&mut exact, &mut buf).unwrap());
 }
+
+#[derive(Clone, Default)]
+struct SharedBuf(std::sync::Arc<std::sync::Mutex<Vec<u8>>>);
+
+impl std::io::Write for SharedBuf {
+    fn write(&mut self, b: &[u8]) -> std::io::Result<usize> {
+        self.0.lock().unwrap().extend_from_slice(b);
+        Ok(b.len())
+    }
+    fn flush(&mut self) -> std::io::Result<()> {
+        Ok(())
+    }
+}
+
+#[test]
+fn progress_counts_processed_files_deterministically_and_clears() {
+    use dredge::progress::Progress;
+    let e = Env::new();
+    e.h(".config/a/one.toml", "x = 1\n");
+    e.h(".config/a/two.toml", "x = 2\n");
+    e.h(".config/b/three.toml", "x = 3\n");
+    let buf = SharedBuf::default();
+    let mut p = Progress::new(Box::new(buf.clone()), true, std::time::Duration::ZERO);
+    let rep = scan::run_with_progress(&e.args(&[]), &mut p).unwrap();
+    assert_eq!(rep.units.len(), 2);
+    let text = String::from_utf8(buf.0.lock().unwrap().clone()).unwrap();
+    assert!(text.contains("dredge: scanned 3 files..."), "{text:?}");
+    assert!(!text.contains("scanned 4"), "{text:?}");
+    assert!(text.ends_with('\r'), "{text:?}");
+    assert!(!text.contains(".config") && !text.contains("one.toml"));
+    // Nothing is shown when disabled.
+    let off = SharedBuf::default();
+    let mut p = Progress::new(Box::new(off.clone()), false, std::time::Duration::ZERO);
+    scan::run_with_progress(&e.args(&[]), &mut p).unwrap();
+    assert!(off.0.lock().unwrap().is_empty());
+}

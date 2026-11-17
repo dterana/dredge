@@ -54,7 +54,7 @@ fn lossy(p: &Path) -> String {
 }
 
 /// 1204 -> "1,204".
-fn thousands(n: usize) -> String {
+pub(crate) fn thousands(n: usize) -> String {
     let digits = n.to_string();
     let mut out = String::new();
     for (i, c) in digits.chars().enumerate() {
