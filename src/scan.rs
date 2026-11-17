@@ -702,7 +702,7 @@ fn git_root(dir: &Path) -> Option<&Path> {
 /// only through `open_regular`, which refuses a symlink and closes a FIFO or
 /// device unread, and read only when the opened file is a regular file of at
 /// most `MAX_GITIGNORE_BYTES`; `None` when absent, unusual, too large or
-/// empty. The only
+/// empty. A leading UTF-8 byte order mark is dropped, as git does. The only
 /// reader of ignore files in the committed scan.
 fn read_gitignore(base: &Path) -> Option<Gitignore> {
     let path = base.join(".gitignore");
@@ -720,6 +720,7 @@ fn read_gitignore(base: &Path) -> Option<Gitignore> {
         return None;
     }
     let text = String::from_utf8_lossy(&buf);
+    let text = text.strip_prefix('\u{feff}').unwrap_or(&text);
     let mut builder = GitignoreBuilder::new(base);
     for line in text.lines() {
         // A line that is not a valid pattern is skipped, as git does.

@@ -1158,3 +1158,20 @@ fn a_symlink_named_dot_git_does_not_start_a_nested_repo() {
         .iter()
         .all(|p| !p.ends_with("api.key")));
 }
+
+#[test]
+fn a_leading_bom_in_gitignore_is_ignored() {
+    let e = git_repo(false);
+    e.w("genesis/.gitignore", "\u{feff}*.key\n");
+    e.w("genesis/dotfiles-personal/zsh/a.key", &token_line());
+    e.w("genesis/dotfiles-personal/zsh/.envrc", &token_line());
+    let v = json_with_deadline(&e, &["genesis/dotfiles-personal"], 10);
+    assert_eq!(
+        committed_paths(&e, &v),
+        vec![
+            "genesis/dotfiles-personal/zsh/.envrc",
+            "genesis/dotfiles-personal/zsh/local.env",
+            "genesis/dotfiles-personal/zsh/secret",
+        ]
+    );
+}
