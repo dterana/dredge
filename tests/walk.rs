@@ -639,3 +639,31 @@ fn visited_counts_every_entry_read_and_nothing_inside_pruned_dirs() {
     // Without pruning, Cache/x/y/z adds x, y and z.
     assert_eq!(count(false), 9);
 }
+
+#[test]
+fn files_and_symlinks_named_like_cache_dirs_are_not_pruned() {
+    let fx = Fixture::new();
+    fx.file("h/.a/Cache");
+    fx.file("h/.b/CACHE");
+    fx.file("h/.c/logs");
+    fx.file("h/.cache");
+    let target = fx.dir("elsewhere");
+    let link = fx.symlink("h/.d/Cache", &target);
+    fx.file("h/.d/keep.txt");
+    let home = fx.root().join("h");
+    let r = scan_pruned(&home, &Rules::embedded(), &[]);
+    assert_eq!(r.pruned_dirs, 0);
+    assert_eq!(
+        unit(&r, &home.join(".a")).files,
+        vec![home.join(".a/Cache")]
+    );
+    assert_eq!(
+        unit(&r, &home.join(".b")).files,
+        vec![home.join(".b/CACHE")]
+    );
+    assert_eq!(unit(&r, &home.join(".c")).files, vec![home.join(".c/logs")]);
+    let cache = unit(&r, &home.join(".cache"));
+    assert!(!cache.pruned);
+    assert_eq!(cache.files, vec![home.join(".cache")]);
+    assert_eq!(r.symlinks, vec![link]);
+}

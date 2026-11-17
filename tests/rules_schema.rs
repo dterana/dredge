@@ -368,3 +368,34 @@ fn ngrok_authtoken_matches_yaml_and_env_forms_but_not_npm() {
     assert!(fired(&format!("//registry.npmjs.org/:_authToken={fake}")).is_empty());
     assert!(fired(&format!("MY_AUTHTOKEN={fake}")).is_empty());
 }
+
+#[test]
+fn no_config_rule_sits_under_a_directory_that_is_not_entered() {
+    use dredge::classify::prunes_dir;
+    let defs = Rules::parse_defs(APPS).unwrap();
+    let rules = Rules::parse(APPS).unwrap();
+    for d in &defs {
+        if matches!(d.kind, Kind::Cache | Kind::State) {
+            continue;
+        }
+        for g in &d.globs {
+            let p = sample(g);
+            for dir in Path::new(&p).ancestors().skip(1) {
+                if dir.as_os_str().is_empty() {
+                    continue;
+                }
+                let by_cache_rule = rules
+                    .lookup(&dir.join("x"))
+                    .is_some_and(|m| matches!(m.kind, Kind::Cache | Kind::State));
+                assert!(
+                    by_cache_rule || !prunes_dir(dir, &rules),
+                    "rule {} (glob {g}): directory {} is named like a cache and is not entered; \
+                     make the rule cover {}/**",
+                    d.app,
+                    dir.display(),
+                    dir.display()
+                );
+            }
+        }
+    }
+}
