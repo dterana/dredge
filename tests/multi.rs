@@ -435,6 +435,10 @@ fn genesis_like() -> Env {
     );
     // Finder leaves these everywhere; they do not make a folder a package.
     w("dotfiles-common/.DS_Store", "\0\0\0\x01Bud1");
+    // Repository metadata at the top of a stow directory does not make it
+    // a package either.
+    w("dotfiles-personal/.gitignore", "*.local\n");
+    w("dotfiles-professional/.gitkeep", "");
     let c = format!("{g}/dotfiles-common");
     let p = format!("{g}/dotfiles-personal");
     e.link(".zshrc", &format!("{c}/zsh/.zshrc"));
@@ -514,6 +518,27 @@ fn hint_stays_quiet_for_real_packages() {
     symlink(e.p("elsewhere/b"), e.p("dots/linked/b")).unwrap();
     // A symlinked top-level directory is not followed.
     symlink(e.p("elsewhere"), e.p("dots/stowlink")).unwrap();
+    // Folders of subprojects: version control and tooling metadata is not
+    // what makes a folder a package.
+    e.w("dots/herdr-app-mods/app-one/.gitignore", "target\n");
+    e.w("dots/herdr-app-mods/app-one/main.rs", "x\n");
+    e.w("dots/herdr-app-mods/app-two/.gitignore", "target\n");
+    e.w("dots/vendor/a/.git", "gitdir: ../../.git/modules/a\n");
+    e.w("dots/vendor/b/.git/HEAD", "ref: refs/heads/main\n");
+    // Each metadata name on its own, in two subfolders of one folder.
+    for (i, name) in [
+        ".gitattributes",
+        ".gitmodules",
+        ".gitkeep",
+        ".DS_Store",
+        ".github/workflows/ci.yml",
+    ]
+    .iter()
+    .enumerate()
+    {
+        e.w(&format!("dots/tools{i}/one/{name}"), "x\n");
+        e.w(&format!("dots/tools{i}/two/{name}"), "x\n");
+    }
     let rep = e.run(&["dots"]);
     assert!(rep.notes.is_empty(), "{:?}", rep.notes);
     let out = e.bin(&["dots"]).output().unwrap();
@@ -788,4 +813,47 @@ fn a_symlinked_dot_git_is_not_a_git_root() {
     symlink(e.p("realgit"), e.p("genesis/.git")).unwrap();
     let rep = e.run(&["genesis/dotfiles-personal"]);
     assert_eq!(rep.committed_findings.len(), 2);
+}
+
+/// Documented edge case: a real package whose subfolders hold ordinary dot
+/// files (here `~/Development/.editorconfig` and `~/Work/.envrc`) looks like
+/// a stow directory, so the note is printed for it (a false positive on
+/// stderr only; the report is unchanged).
+#[test]
+fn hint_edge_case_package_of_folders_with_dot_files_gets_the_note() {
+    let e = Env::new();
+    e.w("dots/zsh/.zshrc", "x\n");
+    e.w("dots/projects/Development/.editorconfig", "root = true\n");
+    e.w("dots/projects/Work/.envrc", "use flake\n");
+    let rep = e.run(&["dots"]);
+    assert_eq!(rep.notes.len(), 1, "{:?}", rep.notes);
+    let path = e.p("dots/projects").to_string_lossy().into_owned();
+    assert!(rep.notes[0].starts_with(&format!("{path} looks like")));
+}
+
+#[test]
+fn hint_never_suggests_a_dir_that_is_already_listed() {
+    let e = genesis_like();
+    let common = e
+        .p("genesis/dotfiles-common")
+        .to_string_lossy()
+        .into_owned();
+    for dots in [
+        &["genesis/dotfiles-common", "genesis"][..],
+        &["genesis", "genesis/dotfiles-common"],
+    ] {
+        let rep = e.run(dots);
+        let hints: Vec<&String> = rep
+            .notes
+            .iter()
+            .filter(|n| n.contains("looks like a stow directory"))
+            .collect();
+        assert_eq!(hints.len(), 2, "{dots:?}: {hints:?}");
+        assert!(
+            hints
+                .iter()
+                .all(|h| !h.contains(&format!("--dotfiles {common}"))),
+            "{hints:?}"
+        );
+    }
 }

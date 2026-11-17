@@ -84,7 +84,13 @@ fn run_inner(args: &ScanArgs, progress: &mut Progress) -> Result<Report> {
     for d in &dotfiles {
         let layout = layout::detect(d, layout_arg);
         if layout == Layout::Stow {
-            hints.extend(layout::stow_dir_hints(d).iter().map(|p| stow_dir_note(p)));
+            // Never suggest a directory that is already listed.
+            hints.extend(
+                layout::stow_dir_hints(d)
+                    .iter()
+                    .filter(|p| !dotfiles.contains(p))
+                    .map(|p| stow_dir_note(p)),
+            );
         }
         let index = Index::build(d, layout)
             .with_context(|| format!("cannot read dotfiles directory {}", display_lossy(d)))?;

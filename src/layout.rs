@@ -269,10 +269,23 @@ fn bounded_children(dir: &Path) -> Option<Vec<(String, std::fs::FileType)>> {
     Some(out)
 }
 
-/// A dot-prefixed name that a package would hold. Finder's `.DS_Store`
-/// appears in any folder, so it does not count.
+/// Dot-prefixed names that version control, Finder and tooling put in any
+/// folder. They neither make a folder a package nor stop one from looking
+/// like a stow directory.
+const HINT_METADATA: &[&str] = &[
+    ".DS_Store",
+    ".git",
+    ".gitignore",
+    ".gitattributes",
+    ".gitmodules",
+    ".gitkeep",
+    ".github",
+];
+
+/// A dot-prefixed name (file, directory or symlink) that a package would
+/// hold: anything starting with a dot except `HINT_METADATA`.
 fn is_dot_entry(name: &str) -> bool {
-    name.starts_with('.') && name != ".DS_Store"
+    name.starts_with('.') && !HINT_METADATA.contains(&name)
 }
 
 /// True if `dir` looks like a stow directory of packages rather than a
