@@ -189,7 +189,9 @@ pub fn scan(roots: &[Root], excluded: &[PathBuf]) -> WalkResult {
                 covered_by: e.clone(),
                 dotfiles: true,
             }),
-            (_, Some((j, c))) if walked_dir(j) && walks_into(&c, roots[j].kind, &p) => {
+            // An exact duplicate of an active root is covered whatever it
+            // resolved to, so a symlinked root is never listed twice.
+            (_, Some((j, c))) if c == p || (walked_dir(j) && walks_into(&c, roots[j].kind, &p)) => {
                 Some(SkippedRoot {
                     root: roots[i].path.clone(),
                     covered_by: c,

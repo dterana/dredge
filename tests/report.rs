@@ -866,3 +866,69 @@ fn progress_counts_processed_files_deterministically_and_clears() {
     scan::run_with_progress(&e.args(&[]), &mut p).unwrap();
     assert!(off.0.lock().unwrap().is_empty());
 }
+
+fn note_lines(stderr: &[u8]) -> Vec<String> {
+    String::from_utf8_lossy(stderr)
+        .lines()
+        .map(str::to_string)
+        .collect()
+}
+
+#[test]
+fn same_symlink_root_twice_lists_the_symlink_once_with_one_note() {
+    let e = Env::new();
+    e.h(".zshrc", "export A=1\n");
+    let target = e.fx.root().join("elsewhere");
+    fs::create_dir_all(&target).unwrap();
+    fs::write(target.join("a.conf"), "x = 1\n").unwrap();
+    let link = e.fx.root().join("linked");
+    symlink(&target, &link).unwrap();
+    let out = e
+        .bin()
+        .arg("--json")
+        .arg("--root")
+        .arg(&link)
+        .arg("--root")
+        .arg(&link)
+        .output()
+        .unwrap();
+    let paths = json_unit_paths(&out.stdout);
+    let listed = paths
+        .iter()
+        .filter(|p| p.as_str() == link.to_string_lossy())
+        .count();
+    assert_eq!(listed, 1, "{paths:?}");
+    let lines = note_lines(&out.stderr);
+    assert_eq!(lines.len(), 1, "{lines:?}");
+    assert!(lines[0].starts_with("dredge: note: "), "{lines:?}");
+    assert!(lines[0].contains("already covered by"), "{lines:?}");
+}
+
+#[test]
+fn root_equal_to_a_symlinked_config_dir_does_not_duplicate_the_unit() {
+    let e = Env::new();
+    let real = e.fx.root().join("real-config");
+    fs::create_dir_all(real.join("atuin")).unwrap();
+    fs::write(real.join("atuin/config.toml"), "x = 1\n").unwrap();
+    let config = e.home().join(".config");
+    symlink(&real, &config).unwrap();
+    let base = e.bin().arg("--json").output().unwrap();
+    assert!(base.stderr.is_empty());
+    let out = e
+        .bin()
+        .arg("--json")
+        .arg("--root")
+        .arg(&config)
+        .output()
+        .unwrap();
+    let paths = json_unit_paths(&out.stdout);
+    assert_eq!(paths, json_unit_paths(&base.stdout));
+    let listed = paths
+        .iter()
+        .filter(|p| p.as_str() == config.to_string_lossy())
+        .count();
+    assert_eq!(listed, 1, "{paths:?}");
+    let lines = note_lines(&out.stderr);
+    assert_eq!(lines.len(), 1, "{lines:?}");
+    assert!(lines[0].starts_with("dredge: note: "), "{lines:?}");
+}

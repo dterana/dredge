@@ -405,3 +405,35 @@ fn depth_truncated_counts_exact_unentered_dirs() {
     let shallow = walk::scan(&[Root::extra(fx.root().join("root/.v"))], &[]);
     assert_eq!(shallow.depth_truncated, 0);
 }
+
+#[test]
+fn same_outside_symlink_root_twice_is_listed_once_with_one_skip() {
+    let fx = Fixture::new();
+    let home = config_home(&fx);
+    fx.file("elsewhere/a.conf");
+    let link = fx.symlink("linked", &fx.root().join("elsewhere"));
+    let mut roots = walk::default_roots(&home);
+    roots.push(Root::extra(link.clone()));
+    roots.push(Root::extra(link.clone()));
+    let r = walk::scan(&roots, &[]);
+    assert_eq!(r.symlinks, vec![link.clone()]);
+    assert_eq!(r.skipped.len(), 1);
+    assert_eq!(r.skipped[0].root, link);
+    assert_eq!(r.skipped[0].covered_by, link);
+    assert!(!r.skipped[0].dotfiles);
+}
+
+#[test]
+fn extra_root_equal_to_a_symlinked_builtin_root_is_skipped() {
+    let fx = Fixture::new();
+    fx.file("h/.zshrc");
+    fx.file("real/atuin/config.toml");
+    let config = fx.symlink("h/.config", &fx.root().join("real"));
+    let home = fx.root().join("h");
+    let mut roots = walk::default_roots(&home);
+    roots.push(Root::extra(config.clone()));
+    let r = walk::scan(&roots, &[]);
+    assert_eq!(r.symlinks, vec![config.clone()]);
+    assert_eq!(r.skipped.len(), 1);
+    assert_eq!(r.skipped[0].covered_by, config);
+}
