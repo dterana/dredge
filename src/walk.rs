@@ -14,6 +14,8 @@ pub struct WalkResult {
     pub units: Vec<UnitFiles>,
     pub unreadable: Vec<PathBuf>,
     pub symlinks: Vec<PathBuf>,
+    /// Extra roots that were not walked because another root already covers them.
+    pub skipped: Vec<SkippedRoot>,
 }
 
 #[derive(Debug)]
@@ -23,21 +25,69 @@ pub struct UnitFiles {
     pub files: Vec<PathBuf>,
 }
 
-/// Spec roots. The first entry is `home` itself; `scan` recognises a root that
-/// contains other roots as the home root and only yields its top level dot
-/// entries, excluding children that are themselves scan roots (e.g. `.config`).
-pub fn default_roots(home: &Path) -> Vec<PathBuf> {
+/// How a root is walked.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RootKind {
+    /// The home directory: only its top level dot entries are units. The only
+    /// root that is ever dot-filtered.
+    Home,
+    /// A built-in root (`~/.config` and the like): every depth-1 child is a unit.
+    Builtin,
+    /// A `--root` entry: like `Builtin`, but skipped when another root already
+    /// walks it.
+    Extra,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Root {
+    pub path: PathBuf,
+    pub kind: RootKind,
+}
+
+impl Root {
+    pub fn home(path: PathBuf) -> Root {
+        Root {
+            path,
+            kind: RootKind::Home,
+        }
+    }
+    pub fn builtin(path: PathBuf) -> Root {
+        Root {
+            path,
+            kind: RootKind::Builtin,
+        }
+    }
+    pub fn extra(path: PathBuf) -> Root {
+        Root {
+            path,
+            kind: RootKind::Extra,
+        }
+    }
+}
+
+/// An extra root left out because `covered_by` (a walked root, or an excluded
+/// directory when `dotfiles` is set) already contains it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SkippedRoot {
+    pub root: PathBuf,
+    pub covered_by: PathBuf,
+    pub dotfiles: bool,
+}
+
+/// Spec roots: `home` itself (dot entries only), `~/.config`,
+/// `~/Library/Application Support` and `~/Library/Preferences`.
+pub fn default_roots(home: &Path) -> Vec<Root> {
     vec![
-        home.to_path_buf(),
-        home.join(".config"),
-        home.join("Library").join("Application Support"),
-        home.join("Library").join("Preferences"),
+        Root::home(home.to_path_buf()),
+        Root::builtin(home.join(".config")),
+        Root::builtin(home.join("Library").join("Application Support")),
+        Root::builtin(home.join("Library").join("Preferences")),
     ]
 }
 
 /// Scan the default roots of `home`.
-pub fn scan_home(home: &Path, allowed_link_targets: &[PathBuf]) -> WalkResult {
-    scan(&default_roots(home), allowed_link_targets)
+pub fn scan_home(home: &Path) -> WalkResult {
+    scan(&default_roots(home), &[])
 }
 
 enum Resolved {
@@ -47,10 +97,10 @@ enum Resolved {
     Unreadable,
 }
 
-/// Resolve a root without following a symlink at the root itself. An umbrella
-/// (home) root is canonicalized fully, since `$HOME` may be a symlink.
-fn resolve_root(root: &Path, umbrella: bool) -> Resolved {
-    let canon = if umbrella {
+/// Resolve a root without following a symlink at the root itself. The home
+/// root is canonicalized fully, since `$HOME` may be a symlink.
+fn resolve_root(root: &Path, home: bool) -> Resolved {
+    let canon = if home {
         fs::canonicalize(root)
     } else {
         match (root.parent(), root.file_name()) {
@@ -72,35 +122,101 @@ fn resolve_root(root: &Path, umbrella: bool) -> Resolved {
     }
 }
 
-/// Every depth-1 child of each root is a unit, except that a root containing
-/// other roots is the home root: only its dot entries that are not themselves
-/// roots are units.
-pub fn scan(roots: &[PathBuf], _allowed_link_targets: &[PathBuf]) -> WalkResult {
-    // Symlinks are listed and never followed regardless of target, so the
-    // allowed targets need no special handling here; tracking uses them later.
+/// True if walking `root` (of `kind`) reads the directory `p`: `p` is `root`
+/// or lies under it within the walk depth, and for the home root under a dot
+/// entry.
+fn walks_into(root: &Path, kind: RootKind, p: &Path) -> bool {
+    let Ok(rel) = p.strip_prefix(root) else {
+        return false;
+    };
+    let mut comps = rel.components();
+    let Some(first) = comps.next() else {
+        return true;
+    };
+    if kind == RootKind::Home && !is_dot(first.as_os_str()) {
+        return false;
+    }
+    rel.components().count() <= MAX_DEPTH
+}
+
+/// Every depth-1 child of each root is a unit, except under the `Home` root,
+/// where only dot entries are. Each root's walk leaves out the subtrees of
+/// every other root and of every `excluded` directory. An `Extra` root that
+/// another root (or an excluded directory) already covers is not walked and is
+/// recorded in `skipped` instead.
+pub fn scan(roots: &[Root], excluded: &[PathBuf]) -> WalkResult {
     let mut result = WalkResult::default();
-    let umbrella: Vec<bool> = roots
-        .iter()
-        .map(|r| roots.iter().any(|o| o != r && o.starts_with(r)))
-        .collect();
     let resolved: Vec<Resolved> = roots
         .iter()
-        .zip(&umbrella)
-        .map(|(r, u)| resolve_root(r, *u))
+        .map(|r| resolve_root(&r.path, r.kind == RootKind::Home))
         .collect();
-    let root_dirs: Vec<PathBuf> = resolved
-        .iter()
-        .filter_map(|r| match r {
-            Resolved::Dir(p) | Resolved::Symlink(p) => Some(p.clone()),
+    let canon = |i: usize| match &resolved[i] {
+        Resolved::Dir(p) | Resolved::Symlink(p) => Some(p.clone()),
+        _ => None,
+    };
+
+    // Decide which roots are walked. Extra roots are checked shortest path
+    // first, so any root that could cover one has already been decided.
+    let mut active: Vec<usize> = (0..roots.len())
+        .filter(|&i| roots[i].kind != RootKind::Extra)
+        .collect();
+    let mut extras: Vec<(usize, PathBuf)> = (0..roots.len())
+        .filter(|&i| roots[i].kind == RootKind::Extra)
+        .map(|i| (i, canon(i).unwrap_or_else(|| roots[i].path.clone())))
+        .collect();
+    extras.sort_by_key(|(i, p)| (p.components().count(), *i));
+    let mut skipped: Vec<(usize, SkippedRoot)> = Vec::new();
+    for (i, p) in extras {
+        // The closest enclosing claimed path decides: a root that is not a
+        // walked directory leaves its subtree to nobody.
+        let walked_dir = |j: usize| matches!(resolved[j], Resolved::Dir(_));
+        let enclosing_root = active
+            .iter()
+            .filter_map(|&j| canon(j).map(|c| (j, c)))
+            .filter(|(_, c)| p.starts_with(c))
+            .max_by_key(|(_, c)| c.components().count());
+        let enclosing_excluded = excluded
+            .iter()
+            .filter(|e| p.starts_with(e))
+            .max_by_key(|e| e.components().count());
+        let excl_depth = enclosing_excluded.map(|e| e.components().count());
+        let root_depth = enclosing_root.as_ref().map(|(_, c)| c.components().count());
+        let cover = match (enclosing_excluded, enclosing_root) {
+            (Some(e), _) if excl_depth >= root_depth => Some(SkippedRoot {
+                root: roots[i].path.clone(),
+                covered_by: e.clone(),
+                dotfiles: true,
+            }),
+            (_, Some((j, c))) if walked_dir(j) && walks_into(&c, roots[j].kind, &p) => {
+                Some(SkippedRoot {
+                    root: roots[i].path.clone(),
+                    covered_by: c,
+                    dotfiles: false,
+                })
+            }
             _ => None,
-        })
-        .collect();
-    for ((root, res), is_umbrella) in roots.iter().zip(resolved).zip(umbrella) {
-        match res {
-            Resolved::Dir(canon) => scan_root(&canon, is_umbrella, &root_dirs, &mut result),
-            Resolved::Symlink(p) => result.symlinks.push(p),
+        };
+        match cover {
+            Some(s) => skipped.push((i, s)),
+            None => active.push(i),
+        }
+    }
+    active.sort_unstable();
+    skipped.sort_by_key(|(i, _)| *i);
+    result.skipped = skipped.into_iter().map(|(_, s)| s).collect();
+
+    // Paths every walk leaves out: the other roots and the excluded dirs.
+    let mut claimed: Vec<PathBuf> = active.iter().filter_map(|&i| canon(i)).collect();
+    claimed.extend(excluded.iter().cloned());
+    for i in active {
+        match &resolved[i] {
+            Resolved::Dir(c) => {
+                let prune: Vec<PathBuf> = claimed.iter().filter(|p| *p != c).cloned().collect();
+                scan_root(c, roots[i].kind == RootKind::Home, &prune, &mut result);
+            }
+            Resolved::Symlink(p) => result.symlinks.push(p.clone()),
             Resolved::Skip => {}
-            Resolved::Unreadable => result.unreadable.push(root.clone()),
+            Resolved::Unreadable => result.unreadable.push(roots[i].path.clone()),
         }
     }
     result.units.sort_by(|a, b| a.path.cmp(&b.path));
@@ -109,7 +225,7 @@ pub fn scan(roots: &[PathBuf], _allowed_link_targets: &[PathBuf]) -> WalkResult 
     result
 }
 
-fn scan_root(root: &Path, dot_only: bool, other_roots: &[PathBuf], result: &mut WalkResult) {
+fn scan_root(root: &Path, dot_only: bool, prune: &[PathBuf], result: &mut WalkResult) {
     let entries = match fs::read_dir(root) {
         Ok(e) => e,
         Err(_) => {
@@ -129,7 +245,7 @@ fn scan_root(root: &Path, dot_only: bool, other_roots: &[PathBuf], result: &mut 
             continue;
         }
         let path = entry.path();
-        if other_roots.contains(&path) {
+        if prune.contains(&path) {
             continue;
         }
         let ft = match fs::symlink_metadata(&path) {
@@ -148,7 +264,7 @@ fn scan_root(root: &Path, dot_only: bool, other_roots: &[PathBuf], result: &mut 
             });
         } else if ft.is_dir() {
             let mut files = Vec::new();
-            walk_dir(&path, 1, &mut files, result);
+            walk_dir(&path, 1, prune, &mut files, result);
             files.sort();
             result.units.push(UnitFiles { path, files });
         }
@@ -156,7 +272,13 @@ fn scan_root(root: &Path, dot_only: bool, other_roots: &[PathBuf], result: &mut 
     }
 }
 
-fn walk_dir(dir: &Path, depth: usize, files: &mut Vec<PathBuf>, result: &mut WalkResult) {
+fn walk_dir(
+    dir: &Path,
+    depth: usize,
+    prune: &[PathBuf],
+    files: &mut Vec<PathBuf>,
+    result: &mut WalkResult,
+) {
     let entries = match fs::read_dir(dir) {
         Ok(e) => e,
         Err(_) => {
@@ -173,6 +295,9 @@ fn walk_dir(dir: &Path, depth: usize, files: &mut Vec<PathBuf>, result: &mut Wal
             }
         };
         let path = entry.path();
+        if prune.contains(&path) {
+            continue;
+        }
         let ft = match fs::symlink_metadata(&path) {
             Ok(m) => m.file_type(),
             Err(_) => {
@@ -185,7 +310,7 @@ fn walk_dir(dir: &Path, depth: usize, files: &mut Vec<PathBuf>, result: &mut Wal
         } else if ft.is_file() {
             files.push(path);
         } else if ft.is_dir() && depth < MAX_DEPTH {
-            walk_dir(&path, depth + 1, files, result);
+            walk_dir(&path, depth + 1, prune, files, result);
         }
     }
 }

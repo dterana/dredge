@@ -559,3 +559,67 @@ fn drift_in_partially_tracked_unit_is_listed_and_exits_one() {
     );
     e.bin().arg("--dotfiles").arg(e.dots()).assert().code(1);
 }
+
+fn json_unit_paths(stdout: &[u8]) -> Vec<String> {
+    let v: serde_json::Value = serde_json::from_slice(stdout).unwrap();
+    v["units"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|u| u["path"].as_str().unwrap().to_string())
+        .collect()
+}
+
+#[test]
+fn extra_root_under_config_prints_one_note_and_keeps_units() {
+    let e = Env::new();
+    e.h(".config/atuin/config.toml", "x = 1\n");
+    e.h(".config/fish/config.fish", "set x 1\n");
+    e.h(".config/ngrok/ngrok.yml", "version: 2\n");
+    e.h(".zshrc", "export A=1\n");
+    let base = e.bin().arg("--json").output().unwrap();
+    assert!(base.stderr.is_empty());
+    let ngrok = e.home().join(".config/ngrok");
+    let out = e
+        .bin()
+        .arg("--json")
+        .arg("--root")
+        .arg(&ngrok)
+        .output()
+        .unwrap();
+    assert_eq!(out.status.code(), base.status.code());
+    assert_eq!(json_unit_paths(&out.stdout), json_unit_paths(&base.stdout));
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    let lines: Vec<&str> = stderr.lines().collect();
+    assert_eq!(lines.len(), 1, "{stderr}");
+    assert!(lines[0].starts_with("dredge: note: "), "{stderr}");
+    assert!(lines[0].contains(&*ngrok.to_string_lossy()), "{stderr}");
+    let config = fs::canonicalize(e.home().join(".config")).unwrap();
+    assert!(
+        lines[0].ends_with(&format!("covered by {}", config.display())),
+        "{stderr}"
+    );
+}
+
+#[test]
+fn extra_root_inside_dotfiles_dir_prints_note() {
+    let e = Env::new();
+    e.d("zsh/.zshrc", "export A=1\n");
+    e.h(".zshrc", "export A=1\n");
+    let out = e
+        .bin()
+        .arg("--dotfiles")
+        .arg(e.dots())
+        .arg("--root")
+        .arg(e.dots().join("zsh"))
+        .output()
+        .unwrap();
+    assert_eq!(out.status.code(), Some(0));
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    let lines: Vec<&str> = stderr.lines().collect();
+    assert_eq!(lines.len(), 1, "{stderr}");
+    assert!(lines[0].starts_with("dredge: note: "), "{stderr}");
+    assert!(lines[0].contains("dotfiles directory"), "{stderr}");
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert!(!stdout.contains("dots/zsh"), "{stdout}");
+}

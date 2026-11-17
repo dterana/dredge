@@ -85,4 +85,7 @@ pub struct Report {
     pub committed_findings: Vec<Finding>,
     /// Home-relative paths present in the repo but missing from home.
     pub missing_on_machine: Vec<PathBuf>,
+    /// One-line notices for stderr (for example a skipped `--root`). Not part
+    /// of the human or JSON report.
+    pub notes: Vec<String>,
 }

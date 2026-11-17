@@ -18,6 +18,10 @@ fn main() -> ExitCode {
             return ExitCode::from(2);
         }
     };
+    for note in &rep.notes {
+        // A closed stderr must not abort the run.
+        let _ = writeln!(std::io::stderr(), "dredge: note: {note}");
+    }
     let out = if args.json {
         report::render_json(&rep)
     } else {

@@ -15,7 +15,7 @@ use crate::model::{Drift, Finding, Kind, Report, Tracking, Unit};
 use crate::rules::Rules;
 use crate::secrets::{scan_file, SecretRules};
 use crate::track;
-use crate::walk::{self, display_lossy};
+use crate::walk::{self, display_lossy, Root, SkippedRoot};
 
 /// Depth cap for the committed-secrets walk of the dotfiles working tree.
 pub const DOTFILES_MAX_DEPTH: usize = 16;
@@ -61,10 +61,13 @@ pub fn run(args: &ScanArgs) -> Result<Report> {
 
     let mut roots = walk::default_roots(&home);
     for r in &args.root {
-        roots.push(std::path::absolute(r).unwrap_or_else(|_| r.clone()));
+        roots.push(Root::extra(
+            std::path::absolute(r).unwrap_or_else(|_| r.clone()),
+        ));
     }
-    let allowed: Vec<PathBuf> = dotfiles.iter().cloned().collect();
-    let mut walked = walk::scan(&roots, &allowed);
+    let excluded: Vec<PathBuf> = dotfiles.iter().filter(|d| **d != home).cloned().collect();
+    let mut walked = walk::scan(&roots, &excluded);
+    let notes: Vec<String> = walked.skipped.iter().map(skip_note).collect();
 
     // The dotfiles dir is compared against, never reported as home content.
     if let Some(d) = dotfiles.as_deref().filter(|d| *d != home.as_path()) {
@@ -140,9 +143,27 @@ pub fn run(args: &ScanArgs) -> Result<Report> {
         cache_state_count,
         committed_findings,
         missing_on_machine,
+        notes,
     };
     ignore.apply(&mut report, &home);
     Ok(report)
+}
+
+/// The stderr note for an extra root that was not walked.
+fn skip_note(s: &SkippedRoot) -> String {
+    if s.dotfiles {
+        format!(
+            "skipping --root {}: inside the dotfiles directory {}, which is scanned only for committed secrets",
+            display_lossy(&s.root),
+            display_lossy(&s.covered_by)
+        )
+    } else {
+        format!(
+            "skipping --root {}: already covered by {}",
+            display_lossy(&s.root),
+            display_lossy(&s.covered_by)
+        )
+    }
 }
 
 fn resolve_home(arg: Option<&Path>) -> Result<PathBuf> {
