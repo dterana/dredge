@@ -23,13 +23,23 @@ dredge scan --dotfiles ~/dotfiles
 | --- | --- |
 | `--dotfiles <PATH>` | Path to the dotfiles repository. If omitted, only chezmoi's default source directory (`~/.local/share/chezmoi`) is auto-detected. |
 | `--layout <auto\|stow\|chezmoi>` | Repository layout. `auto` (default) picks chezmoi if the directory contains `.chezmoiroot`, `.chezmoiignore`, or names starting with `dot_`, otherwise stow. |
-| `--root <PATH>` | Extra root directory to scan, repeatable. |
+| `--root <PATH>` | Extra root directory to scan, repeatable. See "Limits" for roots that overlap. |
 | `--all` | Show everything, including tracked items and known state and cache items. |
 | `--json` | Emit JSON instead of the human report. |
 | `--no-color` | Disable colored output. |
 | `--fail-on <LIST>` | Comma separated conditions that give a non-zero exit: `secrets`, `drift`, `untracked`. Default `secrets,drift`. |
 
 By default dredge walks the top level dot entries of your home directory plus `~/.config`, `~/Library/Application Support` and `~/Library/Preferences`.
+
+## Limits
+
+- Each depth-1 entry under a root is one unit (for example `~/.config/nvim`). Inside a unit the walk goes at most 6 levels deep (a file directly inside the unit directory is level 1); anything deeper is not listed.
+- Only the home directory root is limited to dot entries. Every other root, including each `--root`, lists all of its depth-1 entries.
+- The committed-secrets scan of the dotfiles working tree descends at most 16 levels.
+- The human report lists at most 20 unknown units, with the total count in the header. `--all` lists every one.
+- The dotfiles directory is never reported as home content, even when it lives inside a scanned root. Its contents are only compared against the live files and scanned for committed secrets.
+- Files under `~/Library/Preferences` are listed by name only and are never scanned for secrets.
+- A `--root` that is already covered by another root (it lies inside a part of that root that is walked, or is the same directory) is not walked twice: dredge prints one `dredge: note:` line on stderr naming both and the report is unchanged. A `--root` inside the dotfiles directory is skipped the same way. A `--root` that contains other roots is walked normally, leaving out the subtrees that are themselves roots.
 
 Sample output, from a run against a synthetic fixture home (a few made up files in a temporary directory, not a real home):
 
