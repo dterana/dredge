@@ -776,8 +776,8 @@ fn pruned_cache_dirs_are_never_opened() {
     e.fx.chmod(&locked_dir, 0o000);
 
     for extra in [
-        &["--json", "--all"][..],
-        &["--json", "--all", "--no-progress"],
+        &["--json", "--all", "--jobs", "1"][..],
+        &["--json", "--all", "--jobs", "4"],
     ] {
         let r = e.scan(extra);
         assert_eq!(r.code, Some(0), "code {:?}", r.code);
@@ -803,5 +803,32 @@ fn pruned_cache_dirs_are_never_opened() {
             })
             .unwrap();
         assert_eq!(unit["kind"], "unknown");
+    }
+}
+
+#[test]
+fn scan_is_read_only_with_parallel_workers() {
+    let e = rich();
+    let parent = e.fx.root();
+    let before = snapshot(&parent);
+    assert!(before.len() > 15, "fixture unexpectedly small");
+    let runs: &[&[&str]] = &[&["--jobs", "4"], &["--jobs", "4", "--json", "--all"]];
+    for extra in runs {
+        let r = e.scan(extra);
+        assert!(
+            matches!(r.code, Some(0) | Some(1)),
+            "{extra:?}: {:?}",
+            r.code
+        );
+        assert_no_leak(&format!("{extra:?}"), &r);
+        let after = snapshot(&parent);
+        let changed: Vec<_> = before
+            .iter()
+            .filter(|(p, s)| after.get(*p) != Some(s))
+            .map(|(p, _)| p.clone())
+            .collect();
+        let added: Vec<_> = after.keys().filter(|p| !before.contains_key(*p)).collect();
+        assert!(changed.is_empty(), "{extra:?}: changed paths {changed:?}");
+        assert!(added.is_empty(), "{extra:?}: new paths {added:?}");
     }
 }

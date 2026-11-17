@@ -3,8 +3,11 @@
 
 use std::fs;
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicUsize, Ordering};
+use std::thread;
+use std::time::Duration;
 
-use anyhow::{bail, Context, Result};
+use anyhow::{anyhow, bail, Context, Result};
 use ignore::WalkBuilder;
 
 use crate::classify::{classify, prunes_dir};
@@ -16,7 +19,7 @@ use crate::progress::Progress;
 use crate::rules::Rules;
 use crate::secrets::{scan_file, scan_file_detailed, SecretRules, SkipReason};
 use crate::track;
-use crate::walk::{self, display_lossy, Root, SkippedRoot, WalkOptions};
+use crate::walk::{self, display_lossy, Root, SkippedRoot, UnitFiles, WalkOptions};
 
 /// Depth cap for the committed-secrets walk of the dotfiles working tree.
 pub const DOTFILES_MAX_DEPTH: usize = 16;
@@ -27,6 +30,12 @@ const CHEZMOI_DEFAULT: &str = ".local/share/chezmoi";
 
 /// Plists here are listed by name only, never read.
 const PREFERENCES: &str = "Library/Preferences";
+
+/// Upper bound on the default number of unit-scanning workers.
+const MAX_DEFAULT_JOBS: usize = 8;
+
+/// How often the main thread refreshes the progress line while workers run.
+const PROGRESS_POLL: Duration = Duration::from_millis(100);
 
 struct Ctx<'a> {
     home: &'a Path,
@@ -126,25 +135,20 @@ fn run_inner(args: &ScanArgs, progress: &mut Progress) -> Result<Report> {
     let mut units = Vec::new();
     let mut cache_state_count = 0;
     let mut skipped_too_large = 0;
-    let mut files_done = 0;
-    for (uf, links) in walked.units.into_iter().zip(nested) {
-        if uf.pruned {
-            units.push(pruned_unit(&ctx, uf.path));
-            continue;
-        }
-        let mut entries: Vec<Entry> = Vec::new();
-        for f in &uf.files {
-            entries.push(file_entry(&ctx, f, &mut unreadable, &mut skipped_too_large));
-            files_done += 1;
-            progress.tick(files_done);
-        }
-        for l in &links {
-            entries.push(link_entry(&ctx, l, false));
-        }
-        let (unit, count) = assemble(&ctx, uf.path, false, entries, &ignore);
-        cache_state_count += count;
-        units.push(unit);
+    let files_scanned = AtomicUsize::new(0);
+    let work: Vec<(UnitFiles, Vec<PathBuf>)> = walked.units.into_iter().zip(nested).collect();
+    let jobs = args.jobs.map_or_else(default_jobs, |n| n.get());
+    let outcomes = par_map(&work, jobs, progress, &files_scanned, |(uf, links)| {
+        scan_unit(&ctx, uf, links, &ignore, &files_scanned)
+    })?;
+    // Merged in walk order, so the result never depends on the worker count.
+    for o in outcomes {
+        units.push(o.unit);
+        cache_state_count += o.cache_state;
+        skipped_too_large += o.too_large;
+        unreadable.extend(o.unreadable);
     }
+    let mut files_done = files_scanned.load(Ordering::Relaxed);
     for link in root_links {
         let entry = link_entry(&ctx, &link, true);
         let (unit, count) = assemble(&ctx, link, true, vec![entry], &ignore);
@@ -180,6 +184,122 @@ fn run_inner(args: &ScanArgs, progress: &mut Progress) -> Result<Report> {
     };
     ignore.apply(&mut report, &home);
     Ok(report)
+}
+
+/// Workers used when `--jobs` is not given: one per CPU, at most
+/// `MAX_DEFAULT_JOBS`, at least one.
+fn default_jobs() -> usize {
+    thread::available_parallelism()
+        .map_or(1, |n| n.get())
+        .clamp(1, MAX_DEFAULT_JOBS)
+}
+
+/// Applies `f` to every item on up to `jobs` scoped worker threads and returns
+/// the results in item order, whatever the worker count. Workers claim items
+/// through an atomic index and keep their results local; nothing is locked.
+/// Meanwhile this thread shows `counter` on `progress`. A worker that panics
+/// turns into an error that carries no item content.
+fn par_map<T, R, F>(
+    items: &[T],
+    jobs: usize,
+    progress: &mut Progress,
+    counter: &AtomicUsize,
+    f: F,
+) -> Result<Vec<R>>
+where
+    T: Sync,
+    R: Send,
+    F: Fn(&T) -> R + Sync,
+{
+    let workers = jobs.min(items.len()).max(1);
+    let next = AtomicUsize::new(0);
+    let mut slots: Vec<Option<R>> = items.iter().map(|_| None).collect();
+    let main = thread::current();
+    thread::scope(|s| -> Result<()> {
+        let handles: Vec<_> = (0..workers)
+            .map(|_| {
+                let main = main.clone();
+                let (next, f) = (&next, &f);
+                s.spawn(move || {
+                    let mut done = Vec::new();
+                    loop {
+                        let i = next.fetch_add(1, Ordering::Relaxed);
+                        let Some(item) = items.get(i) else {
+                            break;
+                        };
+                        done.push((i, f(item)));
+                    }
+                    main.unpark();
+                    done
+                })
+            })
+            .collect();
+        while !handles.iter().all(|h| h.is_finished()) {
+            progress.tick(counter.load(Ordering::Relaxed));
+            thread::park_timeout(PROGRESS_POLL);
+        }
+        progress.tick(counter.load(Ordering::Relaxed));
+        for h in handles {
+            let done = h
+                .join()
+                .map_err(|_| anyhow!("internal error: a scan worker stopped unexpectedly"))?;
+            for (i, r) in done {
+                if let Some(slot) = slots.get_mut(i) {
+                    *slot = Some(r);
+                }
+            }
+        }
+        Ok(())
+    })?;
+    slots
+        .into_iter()
+        .collect::<Option<Vec<R>>>()
+        .context("internal error: a unit was not scanned")
+}
+
+/// What scanning one unit produced.
+struct UnitOutcome {
+    unit: Unit,
+    /// Entries counted toward the cache/state summary.
+    cache_state: usize,
+    unreadable: Vec<PathBuf>,
+    too_large: usize,
+}
+
+/// Classifies, tracks and secret-scans one walked unit. Runs on a worker:
+/// its only shared write is one relaxed increment of `files_scanned` per file.
+fn scan_unit(
+    ctx: &Ctx,
+    uf: &UnitFiles,
+    links: &[PathBuf],
+    ignore: &IgnoreList,
+    files_scanned: &AtomicUsize,
+) -> UnitOutcome {
+    let mut unreadable = Vec::new();
+    let mut too_large = 0;
+    if uf.pruned {
+        return UnitOutcome {
+            unit: pruned_unit(ctx, uf.path.clone()),
+            cache_state: 0,
+            unreadable,
+            too_large,
+        };
+    }
+    let mut entries: Vec<Entry> = Vec::with_capacity(uf.files.len() + links.len());
+    for f in &uf.files {
+        entries.push(file_entry(ctx, f, &mut unreadable, &mut too_large));
+        files_scanned.fetch_add(1, Ordering::Relaxed);
+    }
+    for l in links {
+        entries.push(link_entry(ctx, l, false));
+    }
+    let (unit, cache_state) = assemble(ctx, uf.path.clone(), false, entries, ignore);
+    UnitOutcome {
+        unit,
+        cache_state,
+        unreadable,
+        too_large,
+    }
 }
 
 /// The stderr note for an extra root that was not walked.
@@ -478,6 +598,50 @@ fn io_error_path(err: &ignore::Error) -> Option<PathBuf> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn map_with(jobs: usize, items: &[usize]) -> Vec<String> {
+        let counter = AtomicUsize::new(0);
+        par_map(items, jobs, &mut Progress::disabled(), &counter, |&i| {
+            // Uneven work, so workers finish items out of order.
+            if i % 7 == 0 {
+                thread::sleep(Duration::from_millis(2));
+            }
+            counter.fetch_add(1, Ordering::Relaxed);
+            format!("item-{i}")
+        })
+        .unwrap()
+    }
+
+    #[test]
+    fn par_map_keeps_item_order_for_any_worker_count() {
+        let items: Vec<usize> = (0..300).collect();
+        let want: Vec<String> = items.iter().map(|i| format!("item-{i}")).collect();
+        for jobs in [1, 2, 3, 8, 64, 1000] {
+            assert_eq!(map_with(jobs, &items), want, "jobs {jobs}");
+        }
+        assert!(map_with(4, &[]).is_empty());
+    }
+
+    #[test]
+    fn par_map_turns_a_worker_panic_into_an_error() {
+        let items: Vec<usize> = (0..50).collect();
+        for jobs in [1, 4] {
+            let counter = AtomicUsize::new(0);
+            let r = par_map(&items, jobs, &mut Progress::disabled(), &counter, |&i| {
+                if i == 13 {
+                    panic!("boom");
+                }
+                i
+            });
+            let msg = format!("{:#}", r.err().unwrap());
+            assert_eq!(msg, "internal error: a scan worker stopped unexpectedly");
+        }
+    }
+
+    #[test]
+    fn default_jobs_is_between_one_and_eight() {
+        assert!((1..=MAX_DEFAULT_JOBS).contains(&default_jobs()));
+    }
 
     #[test]
     fn io_error_path_finds_nested_path() {

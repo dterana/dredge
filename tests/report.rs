@@ -1012,3 +1012,106 @@ fn pruned_dirs_line_only_when_nonzero() {
     assert_eq!(v["pruned_dirs"], 1234);
     assert_eq!(v["schema_version"], 1);
 }
+
+// ---- parallel unit scanning ----
+
+struct Restore(PathBuf);
+
+impl Drop for Restore {
+    fn drop(&mut self) {
+        use std::os::unix::fs::PermissionsExt;
+        let _ = fs::set_permissions(&self.0, fs::Permissions::from_mode(0o644));
+    }
+}
+
+/// `rich()` plus many units of every kind, so work is spread over workers.
+fn richer() -> (Env, Option<Restore>) {
+    let e = rich();
+    for i in 0..40 {
+        e.h(&format!(".config/app{i:02}/settings.conf"), "a = 1\n");
+        if i % 3 == 0 {
+            e.h(
+                &format!(".config/app{i:02}/nested/token.yml"),
+                &format!("authtoken: {NGROK_VALUE}\n"),
+            );
+        }
+        if i % 4 == 0 {
+            e.h(&format!(".dot{i:02}/data.db"), "x\n");
+            e.h(&format!(".dot{i:02}/Cache/blob"), "x\n");
+        }
+        e.h(
+            &format!("Library/Application Support/App{i:02}/notes.txt"),
+            &format!("export T={GH_VALUE}\n"),
+        );
+    }
+    e.d("app05/.config/app05/settings.conf", "a = 2\n");
+    let mut guard = None;
+    if unsafe { libc::geteuid() } != 0 {
+        let locked = e.h(".config/app07/locked.conf", "x\n");
+        guard = Some(Restore(locked.clone()));
+        use std::os::unix::fs::PermissionsExt;
+        fs::set_permissions(&locked, fs::Permissions::from_mode(0o000)).unwrap();
+    }
+    (e, guard)
+}
+
+#[test]
+fn jobs_1_and_jobs_4_produce_identical_output() {
+    let (e, _guard) = richer();
+    let dots = e.dots();
+    for extra in [&[][..], &["--json"], &["--all"], &["--json", "--all"]] {
+        let run = |jobs: &str| {
+            let out = e
+                .bin()
+                .arg("--dotfiles")
+                .arg(&dots)
+                .args(["--jobs", jobs, "--no-color"])
+                .args(extra)
+                .output()
+                .unwrap();
+            assert!(matches!(out.status.code(), Some(0) | Some(1)));
+            out
+        };
+        let one = run("1");
+        let four = run("4");
+        assert!(one.stdout == four.stdout, "{extra:?}: stdout differs");
+        assert!(one.stderr == four.stderr, "{extra:?}: stderr differs");
+        let text = String::from_utf8_lossy(&one.stdout);
+        assert_no_secret(&text);
+        assert!(text.contains("github-token"), "{extra:?}");
+    }
+}
+
+#[test]
+fn report_is_the_same_for_any_worker_count() {
+    let (e, _guard) = richer();
+    let base = render_json(&e.run(&e.with_dots(&["--jobs", "1", "--all"])));
+    let v: serde_json::Value = serde_json::from_str(&base).unwrap();
+    assert!(v["units"].as_array().unwrap().len() > 80);
+    for jobs in ["2", "3", "8", "64"] {
+        let rep = e.run(&e.with_dots(&["--jobs", jobs, "--all"]));
+        assert!(render_json(&rep) == base, "--jobs {jobs} differs");
+        assert!(
+            render_human(&rep, false, true)
+                == render_human(&e.run(&e.with_dots(&["--jobs", "1", "--all"])), false, true)
+        );
+    }
+}
+
+#[test]
+fn jobs_zero_is_rejected() {
+    let e = Env::new();
+    e.bin().args(["--jobs", "0"]).assert().code(2);
+}
+
+#[test]
+fn jobs_flag_is_hidden_from_help() {
+    let out = Bin::cargo_bin("dredge")
+        .unwrap()
+        .args(["scan", "--help"])
+        .output()
+        .unwrap();
+    let help = String::from_utf8_lossy(&out.stdout);
+    assert!(!help.contains("--jobs"), "{help}");
+    assert!(!help.contains("--home"), "{help}");
+}

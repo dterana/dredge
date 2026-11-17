@@ -1,3 +1,4 @@
+use std::num::NonZeroUsize;
 use std::path::PathBuf;
 
 use clap::{Args, Parser, Subcommand, ValueEnum};
@@ -75,4 +76,8 @@ pub struct ScanArgs {
     /// Override the home directory (used by tests)
     #[arg(long, hide = true)]
     pub home: Option<PathBuf>,
+
+    /// Number of worker threads that scan units (default: CPU count, at most 8)
+    #[arg(long, hide = true)]
+    pub jobs: Option<NonZeroUsize>,
 }
