@@ -1154,3 +1154,33 @@ fn root_under_a_cache_named_ancestor_is_still_secret_scanned() {
     }
     assert_eq!(rep.pruned_dirs, 0);
 }
+
+#[test]
+fn symlinks_under_a_root_inside_a_pruned_dir_are_reported() {
+    let e = Env::new();
+    let target = e.fx.root().join("elsewhere");
+    fs::create_dir_all(&target).unwrap();
+    let foo = e.home().join(".cache/foo");
+    let keep = e.home().join("Library/Application Support/App/Cache/keep");
+    let mut links = Vec::new();
+    for dir in [&foo, &keep] {
+        write(&dir.join("plain.txt"), "x\n");
+        let link = dir.join("link");
+        symlink(&target, &link).unwrap();
+        links.push(link);
+    }
+    let args = e.args(&[
+        "--all",
+        "--root",
+        &foo.to_string_lossy(),
+        "--root",
+        &keep.to_string_lossy(),
+    ]);
+    let rep = e.run(&args);
+    for link in &links {
+        let u = rep.units.iter().find(|u| &u.path == link);
+        assert!(u.is_some_and(|u| u.symlink), "{} missing", link.display());
+    }
+    let all = render_human(&rep, false, true);
+    assert!(all.contains("~/.cache/foo/link"), "{all}");
+}

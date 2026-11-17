@@ -115,6 +115,40 @@ fn run_inner(args: &ScanArgs, progress: &mut Progress) -> Result<Report> {
         walked.symlinks.retain(|s| !s.starts_with(d));
     }
 
+    let mut unreadable = walked.unreadable;
+    unreadable.extend(index.unreadable().iter().cloned());
+
+    // Attribute nested symlinks to the unit whose walk found them: the deepest
+    // unit that contains the link with no pruned directory in between (a link
+    // under a `--root` inside a pruned directory is that root's own unit). The
+    // rest are unit roots.
+    let found_by = |u: &UnitFiles, link: &Path| {
+        link != u.path
+            && link.starts_with(&u.path)
+            && !u.pruned
+            && link
+                .parent()
+                .into_iter()
+                .flat_map(Path::ancestors)
+                .take_while(|a| *a != u.path)
+                .all(|a| !prune(a))
+    };
+    let mut nested: Vec<Vec<PathBuf>> = vec![Vec::new(); walked.units.len()];
+    let mut root_links = Vec::new();
+    for link in walked.symlinks {
+        let owner = walked
+            .units
+            .iter()
+            .enumerate()
+            .filter(|(_, u)| found_by(u, &link))
+            .max_by_key(|(_, u)| u.path.components().count())
+            .map(|(i, _)| i);
+        match owner {
+            Some(i) => nested[i].push(link),
+            None => root_links.push(link),
+        }
+    }
+
     let ctx = Ctx {
         home: &home,
         dotfiles: dotfiles.as_deref(),
@@ -122,22 +156,6 @@ fn run_inner(args: &ScanArgs, progress: &mut Progress) -> Result<Report> {
         rules,
         secrets: SecretRules::embedded(),
     };
-    let mut unreadable = walked.unreadable;
-    unreadable.extend(index.unreadable().iter().cloned());
-
-    // Attribute nested symlinks to their walked unit; the rest are unit roots.
-    let mut nested: Vec<Vec<PathBuf>> = vec![Vec::new(); walked.units.len()];
-    let mut root_links = Vec::new();
-    for link in walked.symlinks {
-        match walked
-            .units
-            .iter()
-            .position(|u| link != u.path && link.starts_with(&u.path))
-        {
-            Some(i) => nested[i].push(link),
-            None => root_links.push(link),
-        }
-    }
 
     let mut units = Vec::new();
     let mut cache_state_count = 0;
