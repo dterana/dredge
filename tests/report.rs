@@ -214,7 +214,12 @@ fn all_flag_lists_cache_and_state() {
     let e = rich();
     let rep = e.run(&e.with_dots(&[]));
     let out = render_human(&rep, false, false);
-    assert!(out.contains("2 cache/state items"), "{out}");
+    // `.cache` is not entered, so only `.zsh_history` is a listed item.
+    assert!(out.contains("1 cache/state items"), "{out}");
+    assert!(
+        out.contains("1 cache/state directory was not entered"),
+        "{out}"
+    );
     assert!(!out.contains("~/.cache"), "{out}");
     assert!(!out.contains("~/.zsh_history"), "{out}");
     let all = render_human(&rep, false, true);
@@ -400,8 +405,11 @@ fn cache_and_state_files_are_never_secret_scanned() {
         .find(|u| u.path == rep.home.join(".claude"))
         .unwrap();
     assert_eq!(claude.kind, Kind::Config);
-    // Cache/state files inside mixed units are not counted in the summary.
-    assert_eq!(rep.cache_state_count, 3, "{:#?}", rep.units);
+    // Cache/state files inside mixed units are not counted in the summary,
+    // and `.cache` is not entered, so its file is not listed or counted.
+    assert_eq!(rep.cache_state_count, 2, "{:#?}", rep.units);
+    // `.cache`, `.claude/cache` and `.config/mystery/node_modules`.
+    assert_eq!(rep.pruned_dirs, 3);
     assert!(
         rep.units.iter().all(|u| u.findings.is_empty()),
         "{:#?}",
@@ -931,4 +939,76 @@ fn root_equal_to_a_symlinked_config_dir_does_not_duplicate_the_unit() {
     let lines = note_lines(&out.stderr);
     assert_eq!(lines.len(), 1, "{lines:?}");
     assert!(lines[0].starts_with("dredge: note: "), "{lines:?}");
+}
+
+#[test]
+fn secrets_inside_a_pruned_cache_dir_are_not_reported() {
+    let e = Env::new();
+    let app = "Library/Application Support/SomeElectronApp";
+    e.h(
+        &format!("{app}/Cache/Cache_Data/token.txt"),
+        &format!("authtoken: {NGROK_VALUE}\n"),
+    );
+    e.h(
+        &format!("{app}/Local Storage/leveldb/000003.log"),
+        &format!("export T={GH_VALUE}\n"),
+    );
+    // The sibling outside the cache dirs is still read and scanned.
+    let sibling = e.h(
+        &format!("{app}/notes.txt"),
+        &format!("export T={GH_VALUE}\n"),
+    );
+    let rep = e.run(&e.args(&[]));
+    let findings: Vec<_> = rep.units.iter().flat_map(|u| &u.findings).collect();
+    assert_eq!(findings.len(), 1);
+    assert_eq!(findings[0].rule_id, "github-token");
+    assert!(findings[0].path == sibling);
+    assert_eq!(rep.pruned_dirs, 2);
+    assert!(rep.unreadable.is_empty());
+}
+
+#[test]
+fn pruned_unit_root_is_a_listed_cache_unit() {
+    let e = Env::new();
+    e.h(".cache/tool/blob", "cached\n");
+    e.h(".zshrc", "export A=1\n");
+    let rep = e.run(&e.args(&[]));
+    let cache = rep
+        .units
+        .iter()
+        .find(|u| u.path == rep.home.join(".cache"))
+        .unwrap();
+    assert_eq!(cache.kind, Kind::Cache);
+    assert_eq!(cache.tracking, Tracking::Untracked);
+    assert_eq!(rep.cache_state_count, 0);
+    assert_eq!(rep.pruned_dirs, 1);
+    let all = render_human(&rep, false, true);
+    assert!(
+        all.contains("CACHE/STATE\n  -              ~/.cache"),
+        "{all}"
+    );
+}
+
+#[test]
+fn pruned_dirs_line_only_when_nonzero() {
+    let mut rep = Report::default();
+    let out = render_human(&rep, false, false);
+    assert!(!out.contains("not entered"), "{out}");
+    let v: serde_json::Value = serde_json::from_str(&render_json(&rep)).unwrap();
+    assert_eq!(v["pruned_dirs"], 0);
+    rep.pruned_dirs = 1;
+    let out = render_human(&rep, false, false);
+    assert!(
+        out.contains("ignored by .dredgeignore\n  1 cache/state directory was not entered\n"),
+        "{out}"
+    );
+    rep.pruned_dirs = 1234;
+    let out = render_human(&rep, false, false);
+    assert!(
+        out.contains("  1,234 cache/state directories were not entered\n"),
+        "{out}"
+    );
+    let v: serde_json::Value = serde_json::from_str(&render_json(&rep)).unwrap();
+    assert_eq!(v["pruned_dirs"], 1234);
+    assert_eq!(v["schema_version"], 1);
 }

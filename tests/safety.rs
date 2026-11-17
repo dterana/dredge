@@ -738,3 +738,70 @@ fn no_network_dependency_in_crate() {
         }
     }
 }
+
+#[test]
+fn pruned_cache_dirs_are_never_opened() {
+    if unsafe { libc::geteuid() } == 0 {
+        eprintln!("SKIPPED: running as root, chmod 000 does not block reads");
+        return;
+    }
+    let e = Env::new();
+    e.d("zsh/.zshrc", "export A=1\n");
+    let app = "Library/Application Support/Electronish";
+    e.h(&format!("{app}/config.json"), "{}\n");
+    // Mixed-case Chromium storage names; each holds something that would be
+    // reported as unreadable (or as a secret) if it were listed or opened.
+    let locked_file = e.h(&format!("{app}/CODE CACHE/js/locked.bin"), "x\n");
+    let locked_dir = e.home().join(format!("{app}/indexeddb/https_x.leveldb"));
+    fs::create_dir_all(&locked_dir).unwrap();
+    write(&locked_dir.join("000003.log"), "x\n");
+    e.h(
+        &format!("{app}/local storage/leveldb/000005.ldb"),
+        &format!("authtoken: {}\n", SECRETS[4]),
+    );
+    let fifo = e.home().join(format!("{app}/Service Worker/pipe"));
+    fs::create_dir_all(fifo.parent().unwrap()).unwrap();
+    assert!(Command::new("mkfifo")
+        .arg(&fifo)
+        .status()
+        .unwrap()
+        .success());
+    let _g1 = RestoreMode {
+        path: locked_file.clone(),
+    };
+    let _g2 = RestoreMode {
+        path: locked_dir.clone(),
+    };
+    e.fx.chmod(&locked_file, 0o000);
+    e.fx.chmod(&locked_dir, 0o000);
+
+    for extra in [
+        &["--json", "--all"][..],
+        &["--json", "--all", "--no-progress"],
+    ] {
+        let r = e.scan(extra);
+        assert_eq!(r.code, Some(0), "code {:?}", r.code);
+        assert_no_leak(&format!("{extra:?}"), &r);
+        let v: serde_json::Value = serde_json::from_str(&r.stdout).unwrap();
+        assert_eq!(v["unreadable"].as_array().map(Vec::len), Some(0));
+        assert_eq!(v["pruned_dirs"], 4);
+        let mut found = Vec::new();
+        collect_rule_paths(&v["units"], &mut found);
+        assert!(
+            found.is_empty(),
+            "findings inside pruned dirs: {}",
+            found.len()
+        );
+        let unit = v["units"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|u| {
+                u["path"]
+                    .as_str()
+                    .is_some_and(|p| p.ends_with("Electronish"))
+            })
+            .unwrap();
+        assert_eq!(unit["kind"], "unknown");
+    }
+}

@@ -15,7 +15,7 @@ expression: normalized
   "dotfiles": "<DOTS>",
   "home": "<HOME>",
   "ignored": {
-    "cache_state_items": 2,
+    "cache_state_items": 1,
     "dredgeignore": 0
   },
   "missing_on_machine": [
@@ -23,6 +23,7 @@ expression: normalized
     "<HOME>/.vimrc",
     "<HOME>/local.env"
   ],
+  "pruned_dirs": 1,
   "schema_version": 1,
   "skipped_too_large": 0,
   "units": [

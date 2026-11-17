@@ -437,3 +437,174 @@ fn extra_root_equal_to_a_symlinked_builtin_root_is_skipped() {
     assert_eq!(r.skipped.len(), 1);
     assert_eq!(r.skipped[0].covered_by, config);
 }
+
+// ---- pruning of cache/state directories ----
+
+use dredge::classify::prunes_dir;
+use dredge::rules::Rules;
+
+/// Walks the default roots of `home` with the same prune predicate the scan
+/// uses: `classify::prunes_dir` on the home-relative directory.
+fn scan_pruned(home: &Path, rules: &Rules, extra: &[PathBuf]) -> WalkResult {
+    let pred = |d: &Path| prunes_dir(d.strip_prefix(home).unwrap_or(d), rules);
+    let opts = walk::WalkOptions { prune: Some(&pred) };
+    let mut roots = walk::default_roots(home);
+    roots.extend(extra.iter().cloned().map(Root::extra));
+    walk::scan_with(&roots, &[], &opts)
+}
+
+fn all_files(r: &WalkResult) -> Vec<&PathBuf> {
+    r.units.iter().flat_map(|u| &u.files).collect()
+}
+
+#[test]
+fn chromium_storage_dirs_in_any_case_are_pruned() {
+    let fx = Fixture::new();
+    let app = "h/Library/Application Support/Notion";
+    fx.file(&format!("{app}/config.json"));
+    for d in [
+        "CACHE",
+        "code cache",
+        "indexeddb",
+        "Local Storage",
+        "SERVICE WORKER",
+        "Blob_Storage",
+    ] {
+        fx.file(&format!("{app}/{d}/sub/f.txt"));
+    }
+    let home = fx.root().join("h");
+    let r = scan_pruned(&home, &Rules::embedded(), &[]);
+    let notion = unit(&r, &home.join("Library/Application Support/Notion"));
+    assert!(!notion.pruned);
+    assert_eq!(
+        notion.files,
+        vec![home.join("Library/Application Support/Notion/config.json")]
+    );
+    assert_eq!(r.pruned_dirs, 6);
+    assert_eq!(r.depth_truncated, 0);
+    // Without a predicate the same tree is walked in full.
+    let plain = walk::scan_home(&home);
+    assert_eq!(all_files(&plain).len(), 7);
+    assert_eq!(plain.pruned_dirs, 0);
+}
+
+#[test]
+fn cache_name_match_is_case_insensitive() {
+    let fx = Fixture::new();
+    // Separate units: a case-insensitive file system cannot hold all three
+    // spellings side by side.
+    for (u, d) in [(".a", "cache"), (".b", "CACHE"), (".c", "Cache")] {
+        fx.file(&format!("h/{u}/keep.txt"));
+        fx.file(&format!("h/{u}/{d}/inner.txt"));
+    }
+    let home = fx.root().join("h");
+    let r = scan_pruned(&home, &Rules::embedded(), &[]);
+    assert_eq!(r.pruned_dirs, 3);
+    for u in [".a", ".b", ".c"] {
+        assert_eq!(
+            unit(&r, &home.join(u)).files,
+            vec![home.join(u).join("keep.txt")]
+        );
+    }
+}
+
+#[test]
+fn pruned_dirs_counts_only_the_outermost_directory() {
+    let fx = Fixture::new();
+    fx.file("h/.app/settings.toml");
+    fx.file("h/.app/Cache/Code Cache/x");
+    fx.file("h/.app/Cache/y");
+    fx.file("h/.app/sub/IndexedDB/blob_storage/z");
+    fx.file("h/.app/logs/tmp/w");
+    // A unit root that is itself a cache dir.
+    fx.file("h/.cache/tool/blob");
+    // A rule-based state/cache dir (npm), not cache-named.
+    fx.file("h/.npm/_cacache/index/k");
+    fx.file("h/.npm/_update-notifier-last-checked");
+    let home = fx.root().join("h");
+    let rules = Rules::embedded();
+    let r = scan_pruned(&home, &rules, &[]);
+    // Cache, IndexedDB, logs, .cache and .npm/_cacache.
+    assert_eq!(r.pruned_dirs, 5);
+    assert_eq!(
+        unit(&r, &home.join(".app")).files,
+        vec![home.join(".app/settings.toml")]
+    );
+    let cache = unit(&r, &home.join(".cache"));
+    assert!(cache.pruned);
+    assert!(cache.files.is_empty());
+    assert_eq!(
+        unit(&r, &home.join(".npm")).files,
+        vec![home.join(".npm/_update-notifier-last-checked")]
+    );
+    // An overlapping extra root does not count anything twice.
+    let again = scan_pruned(&home, &rules, &[home.join(".app")]);
+    assert_eq!(again.skipped.len(), 1);
+    assert_eq!(again.pruned_dirs, 5);
+}
+
+#[test]
+fn config_rule_beats_a_cache_looking_name() {
+    let fx = Fixture::new();
+    fx.file("h/.foo/Cache/settings.json");
+    fx.file("h/.bar/Cache/blob");
+    let home = fx.root().join("h");
+    let rules = Rules::parse(
+        "[[rule]]\napp=\"foo\"\nkind=\"config\"\nglobs=[\".foo/Cache/**\"]\ndescription=\"d\"\n",
+    )
+    .unwrap();
+    let r = scan_pruned(&home, &rules, &[]);
+    assert_eq!(
+        unit(&r, &home.join(".foo")).files,
+        vec![home.join(".foo/Cache/settings.json")]
+    );
+    assert!(unit(&r, &home.join(".bar")).files.is_empty());
+    assert_eq!(r.pruned_dirs, 1);
+}
+
+#[test]
+fn state_rule_prunes_a_plain_name() {
+    let fx = Fixture::new();
+    fx.file("h/.foo/keep.conf");
+    fx.file("h/.foo/history/h1");
+    let home = fx.root().join("h");
+    let rules = Rules::parse(
+        "[[rule]]\napp=\"foo\"\nkind=\"state\"\nglobs=[\".foo/history/**\"]\ndescription=\"d\"\n",
+    )
+    .unwrap();
+    let r = scan_pruned(&home, &rules, &[]);
+    assert_eq!(
+        unit(&r, &home.join(".foo")).files,
+        vec![home.join(".foo/keep.conf")]
+    );
+    assert_eq!(r.pruned_dirs, 1);
+}
+
+#[test]
+fn pruned_dir_at_the_depth_cap_is_not_depth_truncated() {
+    let fx = Fixture::new();
+    // `.u/a/b/c/d/e` is depth 5; its children sit at the depth cap.
+    fx.file("root/.u/a/b/c/d/e/Cache/x");
+    fx.file("root/.u/a/b/c/d/e/deeper/y");
+    let root = fx.root().join("root");
+    let pred = |d: &Path| prunes_dir(d.strip_prefix(&root).unwrap_or(d), &Rules::embedded());
+    let opts = walk::WalkOptions { prune: Some(&pred) };
+    let r = walk::scan_with(&[Root::extra(root.clone())], &[], &opts);
+    assert_eq!(r.pruned_dirs, 1);
+    assert_eq!(r.depth_truncated, 1);
+    let plain = walk::scan(&[Root::extra(root)], &[]);
+    assert_eq!(plain.depth_truncated, 2);
+}
+
+#[test]
+fn extra_root_inside_a_pruned_dir_is_walked() {
+    let fx = Fixture::new();
+    fx.file("h/.config/app/settings.json");
+    fx.file("h/.config/app/Cache/keep/k.txt");
+    let home = fx.root().join("h");
+    let extra = home.join(".config/app/Cache/keep");
+    let r = scan_pruned(&home, &Rules::embedded(), std::slice::from_ref(&extra));
+    assert!(r.skipped.is_empty(), "{:?}", r.skipped);
+    assert_eq!(r.pruned_dirs, 1);
+    unit(&r, &extra.join("k.txt"));
+}

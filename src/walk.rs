@@ -18,6 +18,9 @@ pub struct WalkResult {
     pub skipped: Vec<SkippedRoot>,
     /// Directories listed but not entered because they sit at `MAX_DEPTH`.
     pub depth_truncated: usize,
+    /// Directories not entered because the prune predicate matched them.
+    /// Only the outermost one counts: nothing inside it is visited.
+    pub pruned_dirs: usize,
 }
 
 #[derive(Debug)]
@@ -25,6 +28,24 @@ pub struct UnitFiles {
     pub path: PathBuf,
     /// Regular files only.
     pub files: Vec<PathBuf>,
+    /// The unit root is a directory the prune predicate matched: it was not
+    /// entered, so `files` is empty.
+    pub pruned: bool,
+}
+
+/// Optional walk behavior. The default prunes nothing.
+#[derive(Clone, Copy, Default)]
+pub struct WalkOptions<'a> {
+    /// Called with the absolute path of every directory the walk is about to
+    /// enter (unit roots included, walk roots excluded). `true` means the
+    /// directory is not listed, not entered, and counted in `pruned_dirs`.
+    pub prune: Option<&'a dyn Fn(&Path) -> bool>,
+}
+
+impl WalkOptions<'_> {
+    fn prunes(&self, dir: &Path) -> bool {
+        self.prune.is_some_and(|f| f(dir))
+    }
 }
 
 /// How a root is walked.
@@ -125,9 +146,9 @@ fn resolve_root(root: &Path, home: bool) -> Resolved {
 }
 
 /// True if walking `root` (of `kind`) reads the directory `p`: `p` is `root`
-/// or lies under it within the walk depth, and for the home root under a dot
-/// entry.
-fn walks_into(root: &Path, kind: RootKind, p: &Path) -> bool {
+/// or lies under it within the walk depth, for the home root under a dot
+/// entry, and neither `p` nor a directory on the way to it is pruned.
+fn walks_into(root: &Path, kind: RootKind, p: &Path, opts: &WalkOptions) -> bool {
     let Ok(rel) = p.strip_prefix(root) else {
         return false;
     };
@@ -138,15 +159,31 @@ fn walks_into(root: &Path, kind: RootKind, p: &Path) -> bool {
     if kind == RootKind::Home && !is_dot(first.as_os_str()) {
         return false;
     }
-    rel.components().count() <= MAX_DEPTH
+    if rel.components().count() > MAX_DEPTH {
+        return false;
+    }
+    let mut dir = root.to_path_buf();
+    for c in rel.components() {
+        dir.push(c);
+        if opts.prunes(&dir) {
+            return false;
+        }
+    }
+    true
 }
 
 /// Every depth-1 child of each root is a unit, except under the `Home` root,
 /// where only dot entries are. Each root's walk leaves out the subtrees of
 /// every other root and of every `excluded` directory. An `Extra` root that
 /// another root (or an excluded directory) already covers is not walked and is
-/// recorded in `skipped` instead.
+/// recorded in `skipped` instead. Prunes nothing.
 pub fn scan(roots: &[Root], excluded: &[PathBuf]) -> WalkResult {
+    scan_with(roots, excluded, &WalkOptions::default())
+}
+
+/// `scan` with options. An `Extra` root inside a pruned directory is walked,
+/// since no other root enters it.
+pub fn scan_with(roots: &[Root], excluded: &[PathBuf], opts: &WalkOptions) -> WalkResult {
     let mut result = WalkResult::default();
     let resolved: Vec<Resolved> = roots
         .iter()
@@ -191,7 +228,9 @@ pub fn scan(roots: &[Root], excluded: &[PathBuf]) -> WalkResult {
             }),
             // An exact duplicate of an active root is covered whatever it
             // resolved to, so a symlinked root is never listed twice.
-            (_, Some((j, c))) if c == p || (walked_dir(j) && walks_into(&c, roots[j].kind, &p)) => {
+            (_, Some((j, c)))
+                if c == p || (walked_dir(j) && walks_into(&c, roots[j].kind, &p, opts)) =>
+            {
                 Some(SkippedRoot {
                     root: roots[i].path.clone(),
                     covered_by: c,
@@ -216,7 +255,8 @@ pub fn scan(roots: &[Root], excluded: &[PathBuf]) -> WalkResult {
         match &resolved[i] {
             Resolved::Dir(c) => {
                 let prune: Vec<PathBuf> = claimed.iter().filter(|p| *p != c).cloned().collect();
-                scan_root(c, roots[i].kind == RootKind::Home, &prune, &mut result);
+                let home = roots[i].kind == RootKind::Home;
+                scan_root(c, home, &prune, opts, &mut result);
             }
             Resolved::Symlink(p) => result.symlinks.push(p.clone()),
             Resolved::Skip => {}
@@ -229,7 +269,13 @@ pub fn scan(roots: &[Root], excluded: &[PathBuf]) -> WalkResult {
     result
 }
 
-fn scan_root(root: &Path, dot_only: bool, prune: &[PathBuf], result: &mut WalkResult) {
+fn scan_root(
+    root: &Path,
+    dot_only: bool,
+    prune: &[PathBuf],
+    opts: &WalkOptions,
+    result: &mut WalkResult,
+) {
     let entries = match fs::read_dir(root) {
         Ok(e) => e,
         Err(_) => {
@@ -265,12 +311,22 @@ fn scan_root(root: &Path, dot_only: bool, prune: &[PathBuf], result: &mut WalkRe
             result.units.push(UnitFiles {
                 files: vec![path.clone()],
                 path,
+                pruned: false,
             });
         } else if ft.is_dir() {
             let mut files = Vec::new();
-            walk_dir(&path, 1, prune, &mut files, result);
-            files.sort();
-            result.units.push(UnitFiles { path, files });
+            let pruned = opts.prunes(&path);
+            if pruned {
+                result.pruned_dirs += 1;
+            } else {
+                walk_dir(&path, 1, prune, opts, &mut files, result);
+                files.sort();
+            }
+            result.units.push(UnitFiles {
+                path,
+                files,
+                pruned,
+            });
         }
         // sockets, FIFOs and devices are skipped without being opened
     }
@@ -280,6 +336,7 @@ fn walk_dir(
     dir: &Path,
     depth: usize,
     prune: &[PathBuf],
+    opts: &WalkOptions,
     files: &mut Vec<PathBuf>,
     result: &mut WalkResult,
 ) {
@@ -314,8 +371,10 @@ fn walk_dir(
         } else if ft.is_file() {
             files.push(path);
         } else if ft.is_dir() {
-            if depth < MAX_DEPTH {
-                walk_dir(&path, depth + 1, prune, files, result);
+            if opts.prunes(&path) {
+                result.pruned_dirs += 1;
+            } else if depth < MAX_DEPTH {
+                walk_dir(&path, depth + 1, prune, opts, files, result);
             } else {
                 result.depth_truncated += 1;
             }

@@ -85,6 +85,8 @@ pub struct Report {
     pub cache_state_count: usize,
     /// Directories not entered because they sit at the walk depth cap.
     pub depth_truncated: usize,
+    /// Cache or state directories the walk did not enter (outermost only).
+    pub pruned_dirs: usize,
     /// Config or unknown files over the scan size cap, not scanned for secrets.
     pub skipped_too_large: usize,
     pub committed_findings: Vec<Finding>,

@@ -21,7 +21,8 @@ UNKNOWN (1)
 COULD NOT READ
   (none)
 
-IGNORED  2 cache/state items, 0 ignored by .dredgeignore
+IGNORED  1 cache/state items, 0 ignored by .dredgeignore
+  1 cache/state directory was not entered
 
 IN REPO, MISSING ON THIS MACHINE
   ~/.envrc

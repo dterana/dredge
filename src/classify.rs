@@ -45,6 +45,17 @@ pub fn is_cache_dir_name(name: &OsStr) -> bool {
     CACHE_DIRS.iter().any(|d| name.eq_ignore_ascii_case(d))
 }
 
+/// True if the walker must not enter the directory `home_rel_dir`. A matching
+/// rule decides, as in `classify` (a child path is probed so `dir/**` globs
+/// match the directory itself): cache or state prunes, anything else does not.
+/// Without a rule, the directory's own name decides.
+pub fn prunes_dir(home_rel_dir: &Path, rules: &Rules) -> bool {
+    match rules.lookup(&home_rel_dir.join("x")) {
+        Some(m) => matches!(m.kind, Kind::Cache | Kind::State),
+        None => home_rel_dir.file_name().is_some_and(is_cache_dir_name),
+    }
+}
+
 pub fn classify(home_rel: &Path, rules: &Rules) -> (Option<String>, Kind) {
     if let Some(m) = rules.lookup(home_rel) {
         return (Some(m.app), m.kind);

@@ -298,6 +298,19 @@ pub fn render_human(report: &Report, color: bool, all: bool) -> String {
         thousands(report.cache_state_count),
         thousands(report.ignored_by_file)
     );
+    if report.pruned_dirs > 0 {
+        let n = report.pruned_dirs;
+        let (noun, verb) = if n == 1 {
+            ("directory", "was")
+        } else {
+            ("directories", "were")
+        };
+        let _ = writeln!(
+            out.buf,
+            "  {} cache/state {noun} {verb} not entered",
+            thousands(n)
+        );
+    }
     if report.depth_truncated > 0 {
         let n = report.depth_truncated;
         let (noun, verb) = if n == 1 {
@@ -391,6 +404,7 @@ pub fn render_json(report: &Report) -> String {
             "dredgeignore": report.ignored_by_file,
         },
         "depth_truncated_dirs": report.depth_truncated,
+        "pruned_dirs": report.pruned_dirs,
         "skipped_too_large": report.skipped_too_large,
     });
     let mut s = serde_json::to_string_pretty(&value)

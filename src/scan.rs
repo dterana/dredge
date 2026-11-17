@@ -7,7 +7,7 @@ use std::path::{Path, PathBuf};
 use anyhow::{bail, Context, Result};
 use ignore::WalkBuilder;
 
-use crate::classify::classify;
+use crate::classify::{classify, prunes_dir};
 use crate::cli::{LayoutArg, ScanArgs};
 use crate::dredgeignore::IgnoreList;
 use crate::layout::{self, Index};
@@ -16,7 +16,7 @@ use crate::progress::Progress;
 use crate::rules::Rules;
 use crate::secrets::{scan_file, scan_file_detailed, SecretRules, SkipReason};
 use crate::track;
-use crate::walk::{self, display_lossy, Root, SkippedRoot};
+use crate::walk::{self, display_lossy, Root, SkippedRoot, WalkOptions};
 
 /// Depth cap for the committed-secrets walk of the dotfiles working tree.
 pub const DOTFILES_MAX_DEPTH: usize = 16;
@@ -80,7 +80,14 @@ fn run_inner(args: &ScanArgs, progress: &mut Progress) -> Result<Report> {
         ));
     }
     let excluded: Vec<PathBuf> = dotfiles.iter().filter(|d| **d != home).cloned().collect();
-    let mut walked = walk::scan(&roots, &excluded);
+    let rules = Rules::embedded();
+    // Cache and state directories are not entered: the same test that
+    // classifies their files, so pruning and classification agree.
+    let prune = |dir: &Path| prunes_dir(&home_rel(&home, dir), &rules);
+    let opts = WalkOptions {
+        prune: Some(&prune),
+    };
+    let mut walked = walk::scan_with(&roots, &excluded, &opts);
     let notes: Vec<String> = walked.skipped.iter().map(skip_note).collect();
 
     // The dotfiles dir is compared against, never reported as home content.
@@ -96,7 +103,7 @@ fn run_inner(args: &ScanArgs, progress: &mut Progress) -> Result<Report> {
         home: &home,
         dotfiles: dotfiles.as_deref(),
         index: &index,
-        rules: Rules::embedded(),
+        rules,
         secrets: SecretRules::embedded(),
     };
     let mut unreadable = walked.unreadable;
@@ -121,6 +128,10 @@ fn run_inner(args: &ScanArgs, progress: &mut Progress) -> Result<Report> {
     let mut skipped_too_large = 0;
     let mut files_done = 0;
     for (uf, links) in walked.units.into_iter().zip(nested) {
+        if uf.pruned {
+            units.push(pruned_unit(&ctx, uf.path));
+            continue;
+        }
         let mut entries: Vec<Entry> = Vec::new();
         for f in &uf.files {
             entries.push(file_entry(&ctx, f, &mut unreadable, &mut skipped_too_large));
@@ -161,6 +172,7 @@ fn run_inner(args: &ScanArgs, progress: &mut Progress) -> Result<Report> {
         ignored_by_file: 0,
         cache_state_count,
         depth_truncated: walked.depth_truncated,
+        pruned_dirs: walked.pruned_dirs,
         skipped_too_large,
         committed_findings,
         missing_on_machine,
@@ -313,6 +325,23 @@ fn link_entry(ctx: &Ctx, path: &Path, unit_root: bool) -> Entry {
         tracking,
         drift: None,
         findings: Vec::new(),
+    }
+}
+
+/// A unit whose root directory was not entered: it lists no files, so it
+/// takes the app and kind its own directory classifies as (cache or state,
+/// since that is what pruned it) and counts nothing toward the summary.
+fn pruned_unit(ctx: &Ctx, path: PathBuf) -> Unit {
+    let (app, kind) = classify(&home_rel(ctx.home, &path).join("_"), &ctx.rules);
+    Unit {
+        path,
+        app,
+        kind,
+        tracking: Tracking::Untracked,
+        findings: Vec::new(),
+        ignored: false,
+        symlink: false,
+        drifted: Vec::new(),
     }
 }
 
