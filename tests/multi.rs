@@ -666,3 +666,126 @@ fn two_dirs_report_is_the_same_for_jobs_1_and_8() {
         assert!(text.contains("github-token"), "{extra:?}");
     }
 }
+
+// ---- committed secrets: the enclosing git work tree's .gitignore files ----
+
+/// A git work tree `genesis` (with `.git` as a directory, or as a file when
+/// `git_file`) whose root `.gitignore` hides local files in its stow dirs.
+fn git_repo(git_file: bool) -> Env {
+    let e = Env::new();
+    if git_file {
+        e.w(
+            "genesis/.git",
+            "gitdir: ../elsewhere/.git/worktrees/genesis\n",
+        );
+    } else {
+        e.w("genesis/.git/HEAD", "ref: refs/heads/main\n");
+    }
+    e.w(
+        "genesis/.gitignore",
+        "**/local.env\n/dotfiles-personal/zsh/secret\n",
+    );
+    let token = format!("export GITHUB_TOKEN={}\n", fake_token());
+    e.w("genesis/dotfiles-common/zsh/.zshrc", "x\n");
+    e.w("genesis/dotfiles-personal/zsh/.zprofile", "x\n");
+    e.w("genesis/dotfiles-personal/zsh/local.env", &token);
+    e.w("genesis/dotfiles-personal/zsh/secret", &token);
+    e
+}
+
+const STOW_ARGS: [&[&str]; 4] = [
+    &["genesis"],
+    &["genesis/dotfiles-common", "genesis/dotfiles-personal"],
+    &["genesis", "genesis/dotfiles-personal"],
+    &["genesis/dotfiles-personal", "genesis/dotfiles-common"],
+];
+
+#[test]
+fn git_root_gitignore_applies_to_listed_stow_subdirs() {
+    for git_file in [false, true] {
+        let e = git_repo(git_file);
+        for dots in STOW_ARGS {
+            let rep = e.run(dots);
+            assert!(
+                rep.committed_findings.is_empty(),
+                "{dots:?} git_file {git_file}: {} committed",
+                rep.committed_findings.len()
+            );
+            let out = e.bin(dots).output().unwrap();
+            assert_eq!(out.status.code(), Some(0), "{dots:?} git_file {git_file}");
+            let stdout = String::from_utf8_lossy(&out.stdout);
+            assert!(!stdout.contains("SECRET  rule"), "{dots:?}: {stdout}");
+        }
+        // A token that is not ignored is still reported, once.
+        e.w(
+            "genesis/dotfiles-personal/zsh/.envrc",
+            &format!("export GITHUB_TOKEN={}\n", fake_token()),
+        );
+        for dots in STOW_ARGS {
+            let rep = e.run(dots);
+            assert_eq!(rep.committed_findings.len(), 1, "{dots:?}");
+            assert_eq!(
+                rep.committed_findings[0].path,
+                e.p("genesis/dotfiles-personal/zsh/.envrc")
+            );
+            e.bin(dots).assert().code(1);
+        }
+    }
+}
+
+#[test]
+fn gitignore_files_between_git_root_and_listed_dir_apply() {
+    let e = git_repo(false);
+    e.w("genesis/dotfiles-personal/.gitignore", "mid.env\n");
+    e.w(
+        "genesis/dotfiles-personal/zsh/mid.env",
+        &format!("T={}\n", fake_token()),
+    );
+    for dots in [
+        &["genesis/dotfiles-personal/zsh"][..],
+        &["genesis/dotfiles-personal"],
+        &["genesis"],
+    ] {
+        assert!(e.run(dots).committed_findings.is_empty(), "{dots:?}");
+    }
+}
+
+#[test]
+fn without_a_git_root_only_ignore_files_inside_the_dir_apply() {
+    let e = git_repo(false);
+    fs::remove_dir_all(e.p("genesis/.git")).unwrap();
+    // The repo root .gitignore is outside the listed dirs: not read.
+    let rep = e.run(&["genesis/dotfiles-common", "genesis/dotfiles-personal"]);
+    assert_eq!(rep.committed_findings.len(), 2);
+    // Listing the root itself still honors its own .gitignore.
+    assert!(e.run(&["genesis"]).committed_findings.is_empty());
+}
+
+#[test]
+fn no_ignore_file_above_the_git_root_is_read() {
+    let e = git_repo(false);
+    // Above the repo: would hide the token if it were read.
+    e.w(".gitignore", "*.env\nabove.env\n");
+    e.w(
+        "genesis/dotfiles-personal/zsh/above.env",
+        &format!("T={}\n", fake_token()),
+    );
+    for dots in STOW_ARGS {
+        let rep = e.run(dots);
+        assert_eq!(rep.committed_findings.len(), 1, "{dots:?}");
+        assert_eq!(
+            rep.committed_findings[0].path,
+            e.p("genesis/dotfiles-personal/zsh/above.env")
+        );
+    }
+}
+
+#[test]
+fn a_symlinked_dot_git_is_not_a_git_root() {
+    let e = git_repo(false);
+    fs::remove_dir_all(e.p("genesis/.git")).unwrap();
+    fs::create_dir_all(e.p("realgit")).unwrap();
+    symlink(e.p("realgit"), e.p("genesis/.git")).unwrap();
+    let rep = e.run(&["genesis/dotfiles-personal"]);
+    assert_eq!(rep.committed_findings.len(), 2);
+}
