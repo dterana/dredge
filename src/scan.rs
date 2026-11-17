@@ -14,7 +14,7 @@ use anyhow::{anyhow, bail, Context, Result};
 use ignore::gitignore::{Gitignore, GitignoreBuilder};
 use ignore::{Match, WalkBuilder};
 
-use crate::classify::{classify_in_unit, prunes_dir};
+use crate::classify::{classify_in_unit, prunes_dir_at};
 use crate::cli::{LayoutArg, ScanArgs};
 use crate::dredgeignore::IgnoreList;
 use crate::layout::{self, Index, Layout};
@@ -112,7 +112,8 @@ fn run_inner(args: &ScanArgs, progress: &mut Progress) -> Result<Report> {
     let rules = Rules::embedded();
     // Cache and state directories are not entered: the same test that
     // classifies their files, so pruning and classification agree.
-    let prune = |dir: &Path| prunes_dir(&home_rel(&home, dir), &rules);
+    let prune =
+        |dir: &Path, unit_root: bool| prunes_dir_at(&home_rel(&home, dir), &rules, unit_root);
     let visited = AtomicUsize::new(0);
     let opts = WalkOptions {
         prune: Some(&prune),
@@ -152,7 +153,7 @@ fn run_inner(args: &ScanArgs, progress: &mut Progress) -> Result<Report> {
                 .into_iter()
                 .flat_map(Path::ancestors)
                 .take_while(|a| *a != u.path)
-                .all(|a| !prune(a))
+                .all(|a| !prune(a, false))
     };
     let mut nested: Vec<Vec<PathBuf>> = vec![Vec::new(); walked.units.len()];
     let mut root_links = Vec::new();

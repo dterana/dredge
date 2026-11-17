@@ -34,21 +34,26 @@ pub struct UnitFiles {
     pub pruned: bool,
 }
 
+/// The prune predicate: a directory's absolute path and whether it is a
+/// unit root.
+pub type PruneFn<'a> = dyn Fn(&Path, bool) -> bool + Sync + 'a;
+
 /// Optional walk behavior. The default prunes nothing and counts nothing.
 #[derive(Clone, Copy, Default)]
 pub struct WalkOptions<'a> {
     /// Called with the absolute path of every directory the walk is about to
-    /// enter (unit roots included, walk roots excluded). `true` means the
-    /// directory is not listed, not entered, and counted in `pruned_dirs`.
-    pub prune: Option<&'a (dyn Fn(&Path) -> bool + Sync)>,
+    /// enter (unit roots included, walk roots excluded), and whether that
+    /// directory is a unit root. `true` means the directory is not listed,
+    /// not entered, and counted in `pruned_dirs`.
+    pub prune: Option<&'a PruneFn<'a>>,
     /// Incremented once (relaxed) for every directory entry the walk reads,
     /// so another thread can show progress.
     pub visited: Option<&'a AtomicUsize>,
 }
 
 impl WalkOptions<'_> {
-    fn prunes(&self, dir: &Path) -> bool {
-        self.prune.is_some_and(|f| f(dir))
+    fn prunes(&self, dir: &Path, unit_root: bool) -> bool {
+        self.prune.is_some_and(|f| f(dir, unit_root))
     }
 
     fn visit(&self) {
@@ -173,9 +178,9 @@ fn walks_into(root: &Path, kind: RootKind, p: &Path, opts: &WalkOptions) -> bool
         return false;
     }
     let mut dir = root.to_path_buf();
-    for c in rel.components() {
+    for (i, c) in rel.components().enumerate() {
         dir.push(c);
-        if opts.prunes(&dir) {
+        if opts.prunes(&dir, i == 0) {
             return false;
         }
     }
@@ -326,7 +331,7 @@ fn scan_root(
             });
         } else if ft.is_dir() {
             let mut files = Vec::new();
-            let pruned = opts.prunes(&path);
+            let pruned = opts.prunes(&path, true);
             if pruned {
                 result.pruned_dirs += 1;
             } else {
@@ -383,7 +388,7 @@ fn walk_dir(
         } else if ft.is_file() {
             files.push(path);
         } else if ft.is_dir() {
-            if opts.prunes(&path) {
+            if opts.prunes(&path, false) {
                 result.pruned_dirs += 1;
             } else if depth < MAX_DEPTH {
                 walk_dir(&path, depth + 1, prune, opts, files, result);

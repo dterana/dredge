@@ -440,13 +440,13 @@ fn extra_root_equal_to_a_symlinked_builtin_root_is_skipped() {
 
 // ---- pruning of cache/state directories ----
 
-use dredge::classify::prunes_dir;
+use dredge::classify::prunes_dir_at;
 use dredge::rules::Rules;
 
 /// Walks the default roots of `home` with the same prune predicate the scan
-/// uses: `classify::prunes_dir` on the home-relative directory.
+/// uses: `classify::prunes_dir_at` on the home-relative directory.
 fn scan_pruned(home: &Path, rules: &Rules, extra: &[PathBuf]) -> WalkResult {
-    let pred = |d: &Path| prunes_dir(d.strip_prefix(home).unwrap_or(d), rules);
+    let pred = |d: &Path, unit: bool| prunes_dir_at(d.strip_prefix(home).unwrap_or(d), rules, unit);
     let opts = walk::WalkOptions {
         prune: Some(&pred),
         ..Default::default()
@@ -590,7 +590,9 @@ fn pruned_dir_at_the_depth_cap_is_not_depth_truncated() {
     fx.file("root/.u/a/b/c/d/e/Cache/x");
     fx.file("root/.u/a/b/c/d/e/deeper/y");
     let root = fx.root().join("root");
-    let pred = |d: &Path| prunes_dir(d.strip_prefix(&root).unwrap_or(d), &Rules::embedded());
+    let pred = |d: &Path, unit: bool| {
+        prunes_dir_at(d.strip_prefix(&root).unwrap_or(d), &Rules::embedded(), unit)
+    };
     let opts = walk::WalkOptions {
         prune: Some(&pred),
         ..Default::default()
@@ -626,7 +628,9 @@ fn visited_counts_every_entry_read_and_nothing_inside_pruned_dirs() {
     let root = fx.root().join("root");
     let count = |prune: bool| {
         let visited = AtomicUsize::new(0);
-        let pred = |d: &Path| prunes_dir(d.strip_prefix(&root).unwrap_or(d), &Rules::embedded());
+        let pred = |d: &Path, unit: bool| {
+            prunes_dir_at(d.strip_prefix(&root).unwrap_or(d), &Rules::embedded(), unit)
+        };
         let opts = walk::WalkOptions {
             prune: if prune { Some(&pred) } else { None },
             visited: Some(&visited),
@@ -666,4 +670,48 @@ fn files_and_symlinks_named_like_cache_dirs_are_not_pruned() {
     assert!(!cache.pruned);
     assert_eq!(cache.files, vec![home.join(".cache")]);
     assert_eq!(r.symlinks, vec![link]);
+}
+
+#[test]
+fn a_config_rule_beats_the_cache_suffix_and_classify_agrees_with_the_walker() {
+    use dredge::classify::classify_in_unit;
+    use dredge::model::Kind;
+    let rules = Rules::parse(
+        "[[rule]]\napp=\"x\"\nkind=\"config\"\nglobs=[\".app/KeepCache/**\"]\ndescription=\"d\"\n",
+    )
+    .unwrap();
+    let fx = Fixture::new();
+    fx.file("h/.app/KeepCache/settings.json");
+    fx.file("h/.app/DropCache/blob");
+    fx.file("h/.app/top.txt");
+    fx.file("h/.mycache/conf");
+    let home = fx.root().join("h");
+    let r = scan_pruned(&home, &rules, &[]);
+    assert_eq!(r.pruned_dirs, 1);
+    let app = unit(&r, &home.join(".app"));
+    assert!(app
+        .files
+        .contains(&home.join(".app/KeepCache/settings.json")));
+    assert!(!app
+        .files
+        .iter()
+        .any(|f| f.starts_with(home.join(".app/DropCache"))));
+    // The unit's own name never matches the suffix.
+    assert!(!unit(&r, &home.join(".mycache")).pruned);
+    // Classification uses the same predicate.
+    let c = |h: &str, u: &str| classify_in_unit(Path::new(h), Path::new(u), &rules).1;
+    assert_eq!(c(".app/DropCache/blob", ".app/DropCache/blob"), Kind::Cache);
+    assert_eq!(
+        c(
+            ".app/KeepCache/settings.json",
+            ".app/KeepCache/settings.json"
+        ),
+        Kind::Config
+    );
+    assert_eq!(c(".mycache/conf", ".mycache/conf"), Kind::Unknown);
+    assert_eq!(c(".app/top.txt", ".app/top.txt"), Kind::Unknown);
+    // A --root inside such a unit is covered by it, as for any walked unit.
+    fx.file("h/.mycache/sub/more.conf");
+    let r = scan_pruned(&home, &rules, &[home.join(".mycache/sub")]);
+    assert_eq!(r.skipped.len(), 1, "{:?}", r.skipped);
 }

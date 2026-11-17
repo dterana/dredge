@@ -45,15 +45,47 @@ pub fn is_cache_dir_name(name: &OsStr) -> bool {
     CACHE_DIRS.iter().any(|d| name.eq_ignore_ascii_case(d))
 }
 
-/// True if the walker must not enter the directory `home_rel_dir`. A matching
-/// rule decides, as in `classify` (a child path is probed so `dir/**` globs
-/// match the directory itself): cache or state prunes, anything else does not.
-/// Without a rule, the directory's own name decides.
-pub fn prunes_dir(home_rel_dir: &Path, rules: &Rules) -> bool {
+/// True if a directory with this name, below a unit's own directory, holds
+/// cache: an explicit cache or state name, or any name that ends in `cache`
+/// or `caches`, compared ignoring ASCII case (`PersistentCache`,
+/// `ImageCache`, `_cacache`). A unit's own directory is tested with
+/// `is_cache_dir_name` only, so `~/.config/ccache` stays a config unit.
+pub fn is_cache_dir_name_below_unit(name: &OsStr) -> bool {
+    if is_cache_dir_name(name) {
+        return true;
+    }
+    let lower = name.to_string_lossy().to_ascii_lowercase();
+    lower.ends_with("cache") || lower.ends_with("caches")
+}
+
+/// The name test for a directory: `is_cache_dir_name` for a unit's own
+/// directory, `is_cache_dir_name_below_unit` below it.
+fn is_cache_dir(name: &OsStr, unit_root: bool) -> bool {
+    if unit_root {
+        is_cache_dir_name(name)
+    } else {
+        is_cache_dir_name_below_unit(name)
+    }
+}
+
+/// True if the walker must not enter the directory `home_rel_dir`, which is
+/// a unit's own directory when `unit_root`. A matching rule decides, as in
+/// `classify` (a child path is probed so `dir/**` globs match the directory
+/// itself): cache or state prunes, anything else does not. Without a rule,
+/// the directory's own name decides (see `is_cache_dir`).
+pub fn prunes_dir_at(home_rel_dir: &Path, rules: &Rules, unit_root: bool) -> bool {
     match rules.lookup(&home_rel_dir.join("x")) {
         Some(m) => matches!(m.kind, Kind::Cache | Kind::State),
-        None => home_rel_dir.file_name().is_some_and(is_cache_dir_name),
+        None => home_rel_dir
+            .file_name()
+            .is_some_and(|n| is_cache_dir(n, unit_root)),
     }
+}
+
+/// `prunes_dir_at` for a directory below a unit's own directory (the
+/// stricter of the two tests).
+pub fn prunes_dir(home_rel_dir: &Path, rules: &Rules) -> bool {
+    prunes_dir_at(home_rel_dir, rules, false)
 }
 
 /// Classifies a home-relative path, treating every one of its directories as
@@ -72,9 +104,14 @@ pub fn classify_in_unit(home_rel: &Path, unit_rel: &Path, rules: &Rules) -> (Opt
     if let Some(m) = rules.lookup(home_rel) {
         return (Some(m.app), m.kind);
     }
+    // The first component is the unit's own name; the rest lie below it.
     let in_cache_dir = unit_rel
         .parent()
-        .map(|p| p.components().any(|c| is_cache_dir_name(c.as_os_str())))
+        .map(|p| {
+            p.components()
+                .enumerate()
+                .any(|(i, c)| is_cache_dir(c.as_os_str(), i == 0))
+        })
         .unwrap_or(false);
     if in_cache_dir {
         return (None, Kind::Cache);
@@ -232,6 +269,40 @@ mod tests {
         assert_eq!(
             c(".config/ngrok/ngrok.yml", "ngrok.yml"),
             (Some("ngrok".into()), Kind::Config)
+        );
+    }
+
+    #[test]
+    fn names_ending_in_cache_count_only_below_a_unit() {
+        for name in [
+            "PersistentCache",
+            "ImageCache",
+            "HttpCache",
+            "Precache",
+            "PERSISTENTCACHE",
+            "SomeCaches",
+            "_cacache",
+        ] {
+            assert!(is_cache_dir_name_below_unit(OsStr::new(name)), "{name}");
+            assert!(!is_cache_dir(OsStr::new(name), true), "{name}");
+            let p = format!("Library/Application Support/App/{name}/x");
+            assert_eq!(k(&p), (None, Kind::Cache), "{p}");
+        }
+        for name in ["Cachet", "cacheable", "Cached", "ccache.conf.d"] {
+            assert!(!is_cache_dir_name_below_unit(OsStr::new(name)), "{name}");
+        }
+        // The explicit names still match a unit's own directory.
+        assert!(is_cache_dir(OsStr::new(".cache"), true));
+        assert!(is_cache_dir(OsStr::new("Caches"), true));
+        let rules = Rules::embedded();
+        let c = |h: &str, u: &str| classify_in_unit(Path::new(h), Path::new(u), &rules);
+        assert_eq!(
+            c(".config/ccache/ccache.conf", "ccache/ccache.conf"),
+            (None, Kind::Unknown)
+        );
+        assert_eq!(
+            c(".config/sccache/config", "sccache/config"),
+            (None, Kind::Unknown)
         );
     }
 

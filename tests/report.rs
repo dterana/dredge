@@ -1293,3 +1293,74 @@ fn vscode_history_and_extensions_are_not_listed_or_scanned() {
     assert_no_secret(&render_human(&rep, true, true));
     assert_no_secret(&json);
 }
+
+// ---- directories whose name ends in cache or caches, below a unit ----
+
+#[test]
+fn cache_suffixed_dirs_below_a_unit_are_pruned_and_unit_names_are_exempt() {
+    let e = Env::new();
+    let token = format!("export T={GH_VALUE}\n");
+    let spotify = "Library/Application Support/Spotify";
+    e.h(&format!("{spotify}/prefs.txt"), "x = 1\n");
+    for name in [
+        "PersistentCache",
+        "ImageCache",
+        "HttpCache",
+        "Precache",
+        // Upper case (a distinct name: macOS file systems usually ignore case).
+        "FONTCACHE",
+        "SomeCaches",
+    ] {
+        e.h(&format!("{spotify}/{name}/dbrts/blob"), &token);
+    }
+    // A file named like such a directory is not pruned.
+    let file = e.h(&format!("{spotify}/sub/PersistentCache"), &token);
+    // A unit whose own name ends in cache is a config directory.
+    let ccache = e.h(".config/ccache/ccache.conf", &token);
+    let sccache = e.h(".config/sccache/config", &token);
+    let rep = e.run(&e.args(&[]));
+    let findings: Vec<&PathBuf> = rep
+        .units
+        .iter()
+        .flat_map(|u| u.findings.iter().map(|f| &f.path))
+        .collect();
+    assert_eq!(findings.len(), 3);
+    assert!(findings.contains(&&file));
+    assert!(findings.contains(&&ccache));
+    assert!(findings.contains(&&sccache));
+    assert_eq!(rep.pruned_dirs, 6);
+    let get = |rel: &str| {
+        rep.units
+            .iter()
+            .find(|u| u.path == rep.home.join(rel))
+            .unwrap()
+    };
+    assert_eq!(get(".config/ccache").kind, Kind::Unknown);
+    assert_eq!(get(".config/sccache").kind, Kind::Unknown);
+    assert_eq!(get(spotify).kind, Kind::Unknown);
+    // The explicit names still prune a unit's own directory.
+    e.h(".cache/tool/x", &token);
+    e.h("Library/Application Support/Caches/x", &token);
+    let rep = e.run(&e.args(&[]));
+    assert_eq!(rep.pruned_dirs, 8);
+    assert_no_secret(&render_human(&rep, false, true));
+}
+
+#[test]
+fn root_with_an_ancestor_ending_in_cache_is_still_scanned() {
+    let e = Env::new();
+    let proj = e.home().join("Projects/MyCache/proj");
+    let secret = e.h(
+        "Projects/MyCache/proj/env.txt",
+        &format!("export T={GH_VALUE}\n"),
+    );
+    let rep = e.run(&e.args(&["--root", &proj.to_string_lossy()]));
+    let u = rep
+        .units
+        .iter()
+        .find(|u| u.path == proj.join("env.txt"))
+        .unwrap();
+    assert_eq!(u.findings.len(), 1);
+    assert!(u.findings[0].path == secret);
+    assert_eq!(rep.pruned_dirs, 0);
+}
