@@ -905,3 +905,166 @@ fn nested_dirs_display_paths_with_the_first_listed_dir_that_holds_them() {
     );
     assert!(!first_inner.contains("outer/inner/shell"), "{first_inner}");
 }
+
+// ---- committed scan: every ignore file is read safely, git precedence ----
+
+/// Runs `dredge scan --json` with a hard deadline, so a hang or a runaway
+/// read fails the test instead of blocking the suite. Returns the parsed
+/// JSON report.
+fn json_with_deadline(e: &Env, dots: &[&str], secs: u64) -> serde_json::Value {
+    use std::io::Read as _;
+    use std::process::Stdio;
+    use std::time::{Duration, Instant};
+    let mut cmd = std::process::Command::new(assert_cmd::cargo::cargo_bin("dredge"));
+    cmd.current_dir(e.fx.root())
+        .env("HOME", e.home())
+        .args(["scan", "--json", "--no-progress", "--home"])
+        .arg(e.home());
+    for d in dots {
+        cmd.arg("--dotfiles").arg(e.p(d));
+    }
+    let mut child = cmd
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null())
+        .spawn()
+        .unwrap();
+    let mut stdout = child.stdout.take().unwrap();
+    let reader = std::thread::spawn(move || {
+        let mut buf = Vec::new();
+        let _ = stdout.read_to_end(&mut buf);
+        buf
+    });
+    let deadline = Duration::from_secs(secs);
+    let start = Instant::now();
+    let status = loop {
+        if let Some(s) = child.try_wait().unwrap() {
+            break s;
+        }
+        if start.elapsed() > deadline {
+            let _ = child.kill();
+            let _ = child.wait();
+            panic!("dredge did not finish within {deadline:?}");
+        }
+        std::thread::sleep(Duration::from_millis(20));
+    };
+    assert!(
+        matches!(status.code(), Some(0) | Some(1)),
+        "exit {:?}",
+        status.code()
+    );
+    serde_json::from_slice(&reader.join().unwrap()).unwrap()
+}
+
+/// Paths of the committed findings, relative to the fixture root.
+fn committed_paths(e: &Env, v: &serde_json::Value) -> Vec<String> {
+    let root = e.fx.root();
+    let mut out: Vec<String> = v["committed_secrets"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|f| {
+            Path::new(f["path"].as_str().unwrap())
+                .strip_prefix(&root)
+                .unwrap()
+                .to_string_lossy()
+                .into_owned()
+        })
+        .collect();
+    out.sort();
+    out
+}
+
+fn token_line() -> String {
+    format!("export GITHUB_TOKEN={}\n", fake_token())
+}
+
+#[test]
+fn special_ignore_files_never_hang_or_blow_up_the_scan() {
+    let e = git_repo(false);
+    e.w("genesis/dotfiles-personal/zsh/.envrc", &token_line());
+    // FIFOs named like every ignore file, above the repo, at its root,
+    // between the root and the listed dir, and inside it.
+    e.fx.fifo(".gitignore");
+    e.fx.fifo("genesis/.ignore");
+    e.fx.fifo("genesis/.git/info/exclude");
+    e.fx.fifo("genesis/dotfiles-personal/.gitignore");
+    e.fx.fifo("genesis/dotfiles-personal/zsh/.gitignore");
+    e.fx.fifo("genesis/dotfiles-personal/zsh/.ignore");
+    e.fx.fifo("genesis/dotfiles-personal/zsh/.rgignore");
+    // Symlinks to an endless device.
+    symlink("/dev/zero", e.p("genesis/dotfiles-common/.gitignore")).unwrap();
+    symlink("/dev/zero", e.p("genesis/dotfiles-common/zsh/.gitignore")).unwrap();
+    for dots in [
+        &["genesis/dotfiles-common", "genesis/dotfiles-personal"][..],
+        &["genesis/dotfiles-personal/zsh"],
+        &["genesis"],
+    ] {
+        let v = json_with_deadline(&e, dots, 10);
+        // The root .gitignore still applies; the special files add nothing.
+        assert_eq!(
+            committed_paths(&e, &v),
+            vec!["genesis/dotfiles-personal/zsh/.envrc"],
+            "{dots:?}"
+        );
+    }
+    // Without a git root, the same files inside the listed dir.
+    fs::remove_dir_all(e.p("genesis/.git")).unwrap();
+    let v = json_with_deadline(&e, &["genesis/dotfiles-personal"], 10);
+    assert_eq!(committed_paths(&e, &v).len(), 3);
+}
+
+#[test]
+fn deepest_gitignore_decides_across_files() {
+    let e = git_repo(false);
+    e.w("genesis/.gitignore", "*.key\n");
+    e.w("genesis/dotfiles-personal/.gitignore", "!re.key\n");
+    e.w("genesis/dotfiles-personal/zsh/re.key", &token_line());
+    e.w("genesis/dotfiles-personal/zsh/other.key", &token_line());
+    // A deeper ignore beats a shallower re-include.
+    e.w("genesis/dotfiles-common/.gitignore", "!*.key\n");
+    e.w("genesis/dotfiles-common/zsh/.gitignore", "hidden.key\n");
+    e.w("genesis/dotfiles-common/zsh/hidden.key", &token_line());
+    e.w("genesis/dotfiles-common/zsh/shown.key", &token_line());
+    let want = vec![
+        "genesis/dotfiles-common/zsh/shown.key",
+        "genesis/dotfiles-personal/zsh/local.env",
+        "genesis/dotfiles-personal/zsh/re.key",
+        "genesis/dotfiles-personal/zsh/secret",
+    ];
+    for dots in STOW_ARGS {
+        let v = json_with_deadline(&e, dots, 10);
+        assert_eq!(committed_paths(&e, &v), want, "{dots:?}");
+    }
+}
+
+#[test]
+fn an_ignored_ancestor_dir_hides_its_whole_subtree() {
+    let e = git_repo(false);
+    e.w("genesis/.gitignore", "build/\n!keep.key\n");
+    e.w("genesis/build/pkg/zsh/.zshrc", "x\n");
+    e.w("genesis/build/pkg/zsh/keep.key", &token_line());
+    e.w("genesis/build/pkg/zsh/.envrc", &token_line());
+    for dots in [&["genesis/build/pkg"][..], &["genesis"], &["genesis/build"]] {
+        let v = json_with_deadline(&e, dots, 10);
+        assert!(
+            committed_paths(&e, &v)
+                .iter()
+                .all(|p| !p.starts_with("genesis/build/")),
+            "{dots:?}"
+        );
+    }
+}
+
+#[test]
+fn an_oversized_gitignore_is_not_read() {
+    let e = git_repo(false);
+    let mut big = "# padding\n".repeat(110_000);
+    big.push_str("**/local.env\n");
+    assert!(big.len() > 1024 * 1024);
+    e.w("genesis/.gitignore", &big);
+    let v = json_with_deadline(&e, &["genesis/dotfiles-personal"], 10);
+    assert!(
+        committed_paths(&e, &v).contains(&"genesis/dotfiles-personal/zsh/local.env".to_string())
+    );
+}
