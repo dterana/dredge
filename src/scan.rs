@@ -1,6 +1,7 @@
 //! Orchestration: resolve inputs, walk, classify, track, secret-scan, and
 //! assemble the report. Read-only throughout.
 
+use std::collections::HashSet;
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicUsize, Ordering};
@@ -86,10 +87,7 @@ fn run_inner(args: &ScanArgs, progress: &mut Progress) -> Result<Report> {
             index,
         });
     }
-    let ignore = match dotfiles.first() {
-        Some(d) => IgnoreList::load(d),
-        None => IgnoreList::default(),
-    };
+    let ignore = IgnoreList::load_all(&dotfiles);
 
     let mut roots = walk::default_roots(&home);
     for r in &args.root {
@@ -190,11 +188,15 @@ fn run_inner(args: &ScanArgs, progress: &mut Progress) -> Result<Report> {
     }
     units.sort_by(|a, b| a.path.cmp(&b.path));
 
+    // A file reachable from two listed dirs (one inside the other) is
+    // scanned, and reported, once.
     let mut committed_findings = Vec::new();
+    let mut seen = HashSet::new();
     for d in &dotfiles {
         committed_findings.extend(scan_committed(
             d,
             &ctx.secrets,
+            &mut seen,
             &mut unreadable,
             progress,
             &mut files_done,
@@ -655,10 +657,12 @@ fn assemble(
 }
 
 /// Scans the dotfiles working tree, honoring only that repo's `.gitignore`.
-/// Regular files only; symlinks are not followed; `.git` is skipped.
+/// Regular files only; symlinks are not followed; `.git` is skipped. Files
+/// already in `seen` are skipped, and every file scanned is added to it.
 fn scan_committed(
     dir: &Path,
     rules: &SecretRules,
+    seen: &mut HashSet<PathBuf>,
     unreadable: &mut Vec<PathBuf>,
     progress: &mut Progress,
     files_done: &mut usize,
@@ -688,6 +692,9 @@ fn scan_committed(
             }
         };
         if !entry.file_type().is_some_and(|t| t.is_file()) {
+            continue;
+        }
+        if !seen.insert(entry.path().to_path_buf()) {
             continue;
         }
         *files_done += 1;

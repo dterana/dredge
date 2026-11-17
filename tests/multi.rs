@@ -283,5 +283,123 @@ fn exit_code_reflects_drift_in_the_second_dir() {
     e.h(".gitconfig", "changed\n");
     e.bin(&["a"]).assert().code(0);
     e.bin(&["a", "b"]).assert().code(1);
-    let _ = fake_token;
+}
+
+#[test]
+fn dredgeignore_is_the_union_of_every_dirs_file() {
+    let e = Env::new();
+    e.w("a/zsh/.zshrc", "x\n");
+    e.w("a/.dredgeignore", ".config/fromfirst/**\n");
+    e.w("b/git/.gitconfig", "x\n");
+    e.w(
+        "b/.dredgeignore",
+        "# only in the second file\n.config/fromsecond/**\n",
+    );
+    // A third directory with no .dredgeignore at all is fine.
+    e.w("c/tmux/.tmux.conf", "x\n");
+    e.h(".config/fromfirst/a.conf", "x = 1\n");
+    e.h(".config/fromsecond/b.conf", "x = 1\n");
+    e.h(".config/neither/c.conf", "x = 1\n");
+    let rep = e.run(&["a", "b", "c"]);
+    let listed = |rel: &str| rep.units.iter().any(|u| u.path == rep.home.join(rel));
+    assert!(!listed(".config/fromfirst"));
+    assert!(!listed(".config/fromsecond"));
+    assert!(listed(".config/neither"));
+    assert_eq!(rep.ignored_by_file, 2);
+    // Each file only through its own directory being listed.
+    let rep = e.run(&["a", "c"]);
+    assert_eq!(rep.ignored_by_file, 1);
+    assert!(rep
+        .units
+        .iter()
+        .any(|u| u.path == rep.home.join(".config/fromsecond")));
+}
+
+#[test]
+fn nested_dirs_report_a_committed_secret_once() {
+    let e = Env::new();
+    let token = fake_token();
+    e.w(
+        "repo/dotfiles-common/shell/.envrc",
+        &format!("export GITHUB_TOKEN={token}\n"),
+    );
+    e.w("repo/dotfiles-common/zsh/.zshrc", "x\n");
+    e.w("repo/Scripts/setup.sh", "echo hi\n");
+    for dots in [
+        &["repo", "repo/dotfiles-common"][..],
+        &["repo/dotfiles-common", "repo"],
+    ] {
+        let rep = e.run(dots);
+        assert_eq!(rep.dotfiles.len(), 2, "{dots:?}");
+        assert_eq!(rep.committed_findings.len(), 1, "{dots:?}");
+        assert_eq!(
+            rep.committed_findings[0].path,
+            e.p("repo/dotfiles-common/shell/.envrc")
+        );
+        let out = e.bin(dots).output().unwrap();
+        let stdout = String::from_utf8_lossy(&out.stdout);
+        assert_eq!(stdout.matches("SECRET  rule: github-token").count(), 1);
+        assert!(!stdout.contains(&token[..12]), "secret prefix leaked");
+        assert!(
+            !stdout.contains(&token[token.len() - 12..]),
+            "secret leaked"
+        );
+    }
+}
+
+#[test]
+fn committed_secrets_are_scanned_in_every_listed_dir() {
+    let e = Env::new();
+    let token = fake_token();
+    e.w("a/zsh/.zshrc", "x\n");
+    e.w("b/shell/.envrc", &format!("export GITHUB_TOKEN={token}\n"));
+    e.w("b/.gitignore", "local.env\n");
+    e.w(
+        "b/shell/local.env",
+        &format!("export GITHUB_TOKEN={token}\n"),
+    );
+    assert!(e.run(&["a"]).committed_findings.is_empty());
+    let rep = e.run(&["a", "b"]);
+    assert_eq!(rep.committed_findings.len(), 1);
+    assert_eq!(rep.committed_findings[0].path, e.p("b/shell/.envrc"));
+    assert!(rep.committed_findings[0].committed);
+    e.bin(&["a", "b"]).assert().code(1);
+}
+
+#[test]
+fn every_listed_dir_inside_home_is_left_out_of_the_walk() {
+    let e = Env::new();
+    e.w("home/.config/dots-a/zsh/.zshrc", "x\n");
+    e.w("home/.config/dots-b/git/.gitconfig", "x\n");
+    e.h(".config/other/c.conf", "x = 1\n");
+    let rep = e.run(&["home/.config/dots-a", "home/.config/dots-b"]);
+    let a = e.home().join(".config/dots-a");
+    let b = e.home().join(".config/dots-b");
+    assert!(rep
+        .units
+        .iter()
+        .all(|u| !u.path.starts_with(&a) && !u.path.starts_with(&b)));
+    assert!(rep
+        .units
+        .iter()
+        .any(|u| u.path == e.home().join(".config/other")));
+    // A --root inside the second one gets the usual note.
+    let out = e
+        .bin(&["home/.config/dots-a", "home/.config/dots-b"])
+        .arg("--root")
+        .arg(b.join("git"))
+        .output()
+        .unwrap();
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    let lines: Vec<&str> = stderr.lines().collect();
+    assert_eq!(lines.len(), 1, "{stderr}");
+    assert!(
+        lines[0].starts_with("dredge: note: skipping --root"),
+        "{stderr}"
+    );
+    assert!(
+        lines[0].contains("inside the dotfiles directory"),
+        "{stderr}"
+    );
+    assert!(lines[0].contains(&*b.to_string_lossy()), "{stderr}");
 }
