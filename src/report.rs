@@ -5,7 +5,8 @@
 //! printed, followed by `  (none)` when it has no entries. Sections that only
 //! exist with `--all` (TRACKED, CACHE/STATE) follow the same rule when shown.
 //! The closing "in repo, missing on this machine" note is a note, not a
-//! section, and is printed only when it has entries.
+//! section, and is printed only when it has entries. Past `MISSING_CAP`
+//! entries it shows the count and, without `--all`, only the first ones.
 
 use std::fmt::Write as _;
 use std::path::Path;
@@ -19,6 +20,9 @@ use crate::walk::MAX_DEPTH;
 
 /// Unknown units shown without `--all`.
 pub const UNKNOWN_CAP: usize = 20;
+
+/// "In repo, missing on this machine" entries shown without `--all`.
+pub const MISSING_CAP: usize = 20;
 
 const APP_W: usize = 14;
 const PATH_W: usize = 44;
@@ -351,12 +355,25 @@ pub fn render_human(report: &Report, color: bool, all: bool) -> String {
     }
 
     if !report.missing_on_machine.is_empty() {
-        let lines: Vec<String> = report
-            .missing_on_machine
+        let missing = &report.missing_on_machine;
+        let shown = if all {
+            missing.len()
+        } else {
+            missing.len().min(MISSING_CAP)
+        };
+        // Up to the cap the header carries no count, as it always did.
+        let mut header = String::from("IN REPO, MISSING ON THIS MACHINE");
+        if missing.len() > MISSING_CAP {
+            let _ = write!(header, " ({})", thousands(missing.len()));
+        }
+        if shown < missing.len() {
+            let _ = write!(header, "  showing {shown}, run with --all to list");
+        }
+        let lines: Vec<String> = missing[..shown]
             .iter()
             .map(|rel| format!("  {}", display_path(report, &report.home.join(rel))))
             .collect();
-        out.section(&h("IN REPO, MISSING ON THIS MACHINE", false), &lines);
+        out.section(&h(&header, false), &lines);
     }
     out.buf
 }

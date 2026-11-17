@@ -208,6 +208,65 @@ fn unknown_capped_at_twenty_with_count() {
     assert!(all.contains("~/.config/unk24"), "{all}");
 }
 
+fn missing_env(n: usize) -> Env {
+    let e = Env::new();
+    for i in 0..n {
+        e.d(&format!("pkg/.m{i:02}"), "x\n");
+    }
+    e
+}
+
+const MISSING: &str = "IN REPO, MISSING ON THIS MACHINE";
+
+#[test]
+fn missing_list_capped_at_twenty_with_count() {
+    let e = missing_env(25);
+    let rep = e.run(&e.with_dots(&[]));
+    assert_eq!(rep.missing_on_machine.len(), 25);
+    let out = render_human(&rep, false, false);
+    assert!(
+        out.contains(&format!(
+            "\n{MISSING} (25)  showing 20, run with --all to list\n"
+        )),
+        "{out}"
+    );
+    assert!(out.contains("  ~/.m19\n"), "{out}");
+    assert!(!out.contains("~/.m20"), "{out}");
+    let section = &out[out.find(MISSING).unwrap()..];
+    assert_eq!(
+        section.lines().filter(|l| l.starts_with("  ~/")).count(),
+        20
+    );
+    let all = render_human(&rep, false, true);
+    assert!(all.contains(&format!("\n{MISSING} (25)\n")), "{all}");
+    let section = &all[all.find(MISSING).unwrap()..];
+    assert_eq!(
+        section.lines().filter(|l| l.starts_with("  ~/")).count(),
+        25
+    );
+    assert!(all.contains("  ~/.m24\n"), "{all}");
+    // JSON always has the full list.
+    let v: serde_json::Value = serde_json::from_str(&render_json(&rep)).unwrap();
+    assert_eq!(v["missing_on_machine"].as_array().unwrap().len(), 25);
+}
+
+#[test]
+fn missing_list_of_twenty_or_fewer_is_unchanged() {
+    for n in [1, 20] {
+        let e = missing_env(n);
+        let rep = e.run(&e.with_dots(&[]));
+        for all in [false, true] {
+            let out = render_human(&rep, false, all);
+            let at = out.find(MISSING).unwrap();
+            let mut want = format!("{MISSING}\n");
+            for i in 0..n {
+                want.push_str(&format!("  ~/.m{i:02}\n"));
+            }
+            assert_eq!(&out[at..], want, "n {n} all {all}");
+        }
+    }
+}
+
 #[test]
 fn all_flag_lists_cache_and_state() {
     let e = rich();
