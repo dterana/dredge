@@ -857,3 +857,51 @@ fn hint_never_suggests_a_dir_that_is_already_listed() {
         );
     }
 }
+
+#[test]
+fn hint_never_looks_inside_dot_prefixed_top_level_dirs() {
+    let e = Env::new();
+    e.w("dots/zsh/.zshrc", "x\n");
+    e.w("dots/.github/a/.x", "x\n");
+    e.w("dots/.github/b/.x", "x\n");
+    e.w("dots/.stow-stuff/a/.y", "x\n");
+    e.w("dots/.stow-stuff/b/.y", "x\n");
+    assert!(e.run(&["dots"]).notes.is_empty());
+}
+
+#[test]
+fn hint_looks_only_at_the_first_32_subdirectories_by_name() {
+    let e = Env::new();
+    for i in 0..40 {
+        e.w(&format!("dots/many/d{i:02}/plain"), "x\n");
+    }
+    // Package-like subfolders only past the first 32 by name: no note.
+    for i in 32..40 {
+        e.w(&format!("dots/many/d{i:02}/.rc"), "x\n");
+    }
+    assert!(e.run(&["dots"]).notes.is_empty());
+    // Two within the first 32: the note.
+    e.w("dots/many/d30/.rc", "x\n");
+    e.w("dots/many/d31/.rc", "x\n");
+    assert_eq!(e.run(&["dots"]).notes.len(), 1);
+}
+
+#[test]
+fn nested_dirs_display_paths_with_the_first_listed_dir_that_holds_them() {
+    let e = Env::new();
+    e.w(
+        "outer/inner/shell/.envrc",
+        &format!("export GITHUB_TOKEN={}\n", fake_token()),
+    );
+    let first_outer = render_human(&e.run(&["outer", "outer/inner"]), false, false);
+    assert!(
+        first_outer.contains("\n  outer/inner/shell/.envrc "),
+        "{first_outer}"
+    );
+    let first_inner = render_human(&e.run(&["outer/inner", "outer"]), false, false);
+    assert!(
+        first_inner.contains("\n  inner/shell/.envrc "),
+        "{first_inner}"
+    );
+    assert!(!first_inner.contains("outer/inner/shell"), "{first_inner}");
+}

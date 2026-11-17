@@ -35,7 +35,12 @@ pub struct Source {
 }
 
 pub fn decide(home_file: &Path, home_rel: &Path, dotfiles: &Path, index: &Index) -> Tracking {
-    decide_with(home_file, home_rel, std::iter::once((dotfiles, index)))
+    let root = fs::canonicalize(dotfiles).unwrap_or_else(|_| dotfiles.to_path_buf());
+    decide_with(
+        home_file,
+        home_rel,
+        std::iter::once((root.as_path(), index)),
+    )
 }
 
 /// `decide` against several dotfiles directories: a symlink that resolves
@@ -54,6 +59,7 @@ pub fn lookup_first(sources: &[Source], home_rel: &Path) -> Option<RepoEntry> {
     sources.iter().find_map(|s| s.index.lookup(home_rel))
 }
 
+/// `sources` yields each directory, already canonical, with its index.
 fn decide_with<'a, I>(home_file: &Path, home_rel: &Path, sources: I) -> Tracking
 where
     I: Iterator<Item = (&'a Path, &'a Index)> + Clone,
@@ -67,10 +73,7 @@ where
         let Ok(t) = fs::canonicalize(home_file) else {
             return Tracking::Untracked;
         };
-        let inside = sources.map(|(d, _)| d).any(|d| {
-            let root = fs::canonicalize(d).unwrap_or_else(|_| d.to_path_buf());
-            t.starts_with(&root)
-        });
+        let inside = sources.map(|(d, _)| d).any(|d| t.starts_with(d));
         return if inside {
             Tracking::Tracked
         } else {

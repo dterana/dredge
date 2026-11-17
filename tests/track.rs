@@ -432,3 +432,18 @@ fn unreadable_top_level_dotfiles_dir_is_still_an_error() {
     assert!(Index::build(&repo, Layout::Stow).is_err());
     assert!(Index::build(&repo, Layout::Chezmoi).is_err());
 }
+
+#[test]
+fn decide_resolves_a_non_canonical_dotfiles_path() {
+    let f = Fixture::new();
+    let repo = f.dir("dotfiles");
+    let target = repo.join("zsh/.zshrc");
+    write(&target, "a");
+    f.dir("home");
+    let link = f.symlink("home/.zshrc", &target);
+    let index = Index::build(&repo, Layout::Stow).unwrap();
+    assert_eq!(
+        decide(&link, Path::new(".zshrc"), &repo.join("zsh/.."), &index),
+        Tracking::Tracked
+    );
+}
