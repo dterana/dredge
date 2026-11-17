@@ -2,6 +2,7 @@
 name = "dredge"
 version = "0.1.0"
 edition = "2021"
+rust-version = "1.88"
 description = "Read-only CLI that reports untracked or drifted dotfiles and secrets in a home directory"
 license = "MIT OR Apache-2.0"
 readme = "README.md"
@@ -17,7 +18,7 @@ anyhow = "1"
 clap = { version = "4", features = ["derive"] }
 globset = "0.4.21"
 ignore = "0.4.34"
-libc = "=0.2.191"
+libc = "0.2"
 owo-colors = "4.4.0"
 regex = "1.13.1"
 serde = { version = "1.0.229", features = ["derive"] }
