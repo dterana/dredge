@@ -1120,3 +1120,37 @@ fn jobs_flag_is_hidden_from_help() {
     assert!(!help.contains("--jobs"), "{help}");
     assert!(!help.contains("--home"), "{help}");
 }
+
+// ---- the cache-name heuristic looks only at the unit and below ----
+
+#[test]
+fn root_under_a_cache_named_ancestor_is_still_secret_scanned() {
+    let e = Env::new();
+    e.h(".zshrc", "export A=1\n");
+    let proj = e.home().join("Projects/Cache/proj");
+    let secret = e.h(
+        "Projects/Cache/proj/env.txt",
+        &format!("export T={GH_VALUE}\n"),
+    );
+    // An extra root outside home whose path has a `tmp` component.
+    let tmp_root = e.fx.root().join("tmp/x");
+    let tmp_secret = tmp_root.join("sub/creds.txt");
+    write(&tmp_secret, &format!("export T={GH_VALUE}\n"));
+    let args = e.args(&[
+        "--root",
+        &proj.to_string_lossy(),
+        "--root",
+        &tmp_root.to_string_lossy(),
+    ]);
+    let rep = e.run(&args);
+    for (unit, file) in [
+        (proj.join("env.txt"), secret),
+        (tmp_root.join("sub"), tmp_secret),
+    ] {
+        let u = rep.units.iter().find(|u| u.path == unit).unwrap();
+        assert_eq!(u.kind, Kind::Unknown, "{}", unit.display());
+        assert_eq!(u.findings.len(), 1, "{}", unit.display());
+        assert!(u.findings[0].path == file);
+    }
+    assert_eq!(rep.pruned_dirs, 0);
+}

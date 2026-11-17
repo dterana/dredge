@@ -10,7 +10,7 @@ use std::time::Duration;
 use anyhow::{anyhow, bail, Context, Result};
 use ignore::WalkBuilder;
 
-use crate::classify::{classify, prunes_dir};
+use crate::classify::{classify_in_unit, prunes_dir};
 use crate::cli::{LayoutArg, ScanArgs};
 use crate::dredgeignore::IgnoreList;
 use crate::layout::{self, Index};
@@ -157,7 +157,7 @@ fn run_inner(args: &ScanArgs, progress: &mut Progress) -> Result<Report> {
     }
     let mut files_done = files_scanned.load(Ordering::Relaxed);
     for link in root_links {
-        let entry = link_entry(&ctx, &link, true);
+        let entry = link_entry(&ctx, &link, &link);
         let (unit, count) = assemble(&ctx, link, true, vec![entry], &ignore);
         cache_state_count += count;
         units.push(unit);
@@ -360,11 +360,17 @@ fn scan_unit(
     }
     let mut entries: Vec<Entry> = Vec::with_capacity(uf.files.len() + links.len());
     for f in &uf.files {
-        entries.push(file_entry(ctx, f, &mut unreadable, &mut too_large));
+        entries.push(file_entry(
+            ctx,
+            &uf.path,
+            f,
+            &mut unreadable,
+            &mut too_large,
+        ));
         files_scanned.fetch_add(1, Ordering::Relaxed);
     }
     for l in links {
-        entries.push(link_entry(ctx, l, false));
+        entries.push(link_entry(ctx, &uf.path, l));
     }
     let (unit, cache_state) = assemble(ctx, uf.path.clone(), false, entries, ignore);
     UnitOutcome {
@@ -445,6 +451,14 @@ fn home_rel(home: &Path, p: &Path) -> PathBuf {
         .unwrap_or_else(|_| p.to_path_buf())
 }
 
+/// `p` relative to the directory that holds `unit`, so it starts with the
+/// unit's own name. Only these components may make an entry cache.
+fn unit_rel<'a>(unit: &Path, p: &'a Path) -> &'a Path {
+    unit.parent()
+        .and_then(|d| p.strip_prefix(d).ok())
+        .unwrap_or_else(|| Path::new(p.file_name().unwrap_or_default()))
+}
+
 fn tracks(kind: Kind) -> bool {
     matches!(kind, Kind::Config | Kind::Unknown)
 }
@@ -459,12 +473,13 @@ fn decide(ctx: &Ctx, path: &Path, rel: &Path) -> Tracking {
 /// A regular file: classify, decide tracking and drift, scan for secrets.
 fn file_entry(
     ctx: &Ctx,
+    unit: &Path,
     path: &Path,
     unreadable: &mut Vec<PathBuf>,
     too_large: &mut usize,
 ) -> Entry {
     let rel = home_rel(ctx.home, path);
-    let (app, kind) = classify(&rel, &ctx.rules);
+    let (app, kind) = classify_in_unit(&rel, unit_rel(unit, path), &ctx.rules);
     let mut entry = Entry {
         app,
         kind,
@@ -502,12 +517,13 @@ fn file_entry(
 
 /// A symlink is never read or followed; it is tracked only if it resolves
 /// into the dotfiles dir.
-fn link_entry(ctx: &Ctx, path: &Path, unit_root: bool) -> Entry {
+fn link_entry(ctx: &Ctx, unit: &Path, path: &Path) -> Entry {
     let rel = home_rel(ctx.home, path);
-    let (mut app, mut kind) = classify(&rel, &ctx.rules);
-    if unit_root && app.is_none() && kind == Kind::Unknown {
+    let in_unit = unit_rel(unit, path);
+    let (mut app, mut kind) = classify_in_unit(&rel, in_unit, &ctx.rules);
+    if unit == path && app.is_none() && kind == Kind::Unknown {
         // A symlinked directory: classify as if it were a file inside it.
-        let (a, k) = classify(&rel.join("_"), &ctx.rules);
+        let (a, k) = classify_in_unit(&rel.join("_"), &in_unit.join("_"), &ctx.rules);
         app = a;
         kind = k;
     }
@@ -525,7 +541,8 @@ fn link_entry(ctx: &Ctx, path: &Path, unit_root: bool) -> Entry {
 /// takes the app and kind its own directory classifies as (cache or state,
 /// since that is what pruned it) and counts nothing toward the summary.
 fn pruned_unit(ctx: &Ctx, path: PathBuf) -> Unit {
-    let (app, kind) = classify(&home_rel(ctx.home, &path).join("_"), &ctx.rules);
+    let probe = home_rel(ctx.home, &path).join("_");
+    let (app, kind) = classify_in_unit(&probe, &unit_rel(&path, &path).join("_"), &ctx.rules);
     Unit {
         path,
         app,

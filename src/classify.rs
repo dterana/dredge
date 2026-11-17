@@ -56,18 +56,30 @@ pub fn prunes_dir(home_rel_dir: &Path, rules: &Rules) -> bool {
     }
 }
 
+/// Classifies a home-relative path, treating every one of its directories as
+/// part of the unit. Right for paths under the home dot entries; for a walked
+/// unit use `classify_in_unit`.
 pub fn classify(home_rel: &Path, rules: &Rules) -> (Option<String>, Kind) {
+    classify_in_unit(home_rel, home_rel, rules)
+}
+
+/// Classifies a file of a walked unit. Rules match `home_rel`. The cache-name
+/// heuristic looks only at the directories of `unit_rel`, the same path
+/// relative to the directory holding the unit (so it starts with the unit's
+/// own name): exactly the directories the walker may prune. Directories above
+/// the unit, such as the ancestors of a `--root`, never make a file cache.
+pub fn classify_in_unit(home_rel: &Path, unit_rel: &Path, rules: &Rules) -> (Option<String>, Kind) {
     if let Some(m) = rules.lookup(home_rel) {
         return (Some(m.app), m.kind);
     }
-    let in_cache_dir = home_rel
+    let in_cache_dir = unit_rel
         .parent()
         .map(|p| p.components().any(|c| is_cache_dir_name(c.as_os_str())))
         .unwrap_or(false);
     if in_cache_dir {
         return (None, Kind::Cache);
     }
-    let is_db = home_rel
+    let is_db = unit_rel
         .extension()
         .and_then(|e| e.to_str())
         .map(|e| matches!(e, "sqlite" | "sqlite3" | "db"))
@@ -186,6 +198,41 @@ mod tests {
         }
         // only directories count: a file named like a cache dir is not cache
         assert_eq!(k(".foo/Cache"), (None, Kind::Unknown));
+    }
+
+    #[test]
+    fn only_the_unit_and_below_can_make_a_file_cache() {
+        let rules = Rules::embedded();
+        let c = |home_rel: &str, unit_rel: &str| {
+            classify_in_unit(Path::new(home_rel), Path::new(unit_rel), &rules)
+        };
+        // Cache names at or below the unit count.
+        assert_eq!(c(".cache/tool/x", ".cache/tool/x"), (None, Kind::Cache));
+        assert_eq!(
+            c(
+                "Library/Application Support/App/Code Cache/js/x",
+                "App/Code Cache/js/x"
+            ),
+            (None, Kind::Cache)
+        );
+        assert_eq!(c(".config/app/Cache/x", "app/Cache/x"), (None, Kind::Cache));
+        // Above the unit (an extra root's ancestors) they never do.
+        assert_eq!(
+            c("Projects/Cache/proj/a.txt", "a.txt"),
+            (None, Kind::Unknown)
+        );
+        assert_eq!(
+            c("/private/tmp/x/sub/a.txt", "sub/a.txt"),
+            (None, Kind::Unknown)
+        );
+        assert_eq!(c("/var/Logs/u/a.db", "u/a.db"), (None, Kind::State));
+        // A unit that is itself a file named like a cache dir is not cache.
+        assert_eq!(c("Projects/x/Cache", "Cache"), (None, Kind::Unknown));
+        // Rules keep matching the home-relative path.
+        assert_eq!(
+            c(".config/ngrok/ngrok.yml", "ngrok.yml"),
+            (Some("ngrok".into()), Kind::Config)
+        );
     }
 
     #[test]
