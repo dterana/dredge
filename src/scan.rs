@@ -14,7 +14,7 @@ use ignore::WalkBuilder;
 use crate::classify::{classify_in_unit, prunes_dir};
 use crate::cli::{LayoutArg, ScanArgs};
 use crate::dredgeignore::IgnoreList;
-use crate::layout::{self, Index};
+use crate::layout::{self, Index, Layout};
 use crate::model::{Drift, Finding, Kind, Report, Tracking, Unit};
 use crate::progress::Progress;
 use crate::rules::Rules;
@@ -78,8 +78,12 @@ fn run_inner(args: &ScanArgs, progress: &mut Progress) -> Result<Report> {
 
     // Each directory gets its own layout detection and its own index.
     let mut sources = Vec::with_capacity(dotfiles.len());
+    let mut hints = Vec::new();
     for d in &dotfiles {
         let layout = layout::detect(d, layout_arg);
+        if layout == Layout::Stow {
+            hints.extend(layout::stow_dir_hints(d).iter().map(|p| stow_dir_note(p)));
+        }
         let index = Index::build(d, layout)
             .with_context(|| format!("cannot read dotfiles directory {}", display_lossy(d)))?;
         sources.push(Source {
@@ -108,7 +112,8 @@ fn run_inner(args: &ScanArgs, progress: &mut Progress) -> Result<Report> {
     let mut walked = in_background(progress, &visited, Progress::walking, || {
         walk::scan_with(&roots, &excluded, &opts)
     })?;
-    let notes: Vec<String> = walked.skipped.iter().map(skip_note).collect();
+    let mut notes: Vec<String> = walked.skipped.iter().map(skip_note).collect();
+    notes.extend(hints);
 
     // Dotfiles dirs are compared against, never reported as home content.
     let inside_dotfiles = |p: &Path| excluded.iter().any(|d| p.starts_with(d));
@@ -430,6 +435,16 @@ fn skip_note(s: &SkippedRoot) -> String {
             display_lossy(&s.covered_by)
         )
     }
+}
+
+/// The stderr note for a directory in a stow repo that looks like a stow
+/// directory of packages rather than a package.
+fn stow_dir_note(p: &Path) -> String {
+    let p = display_lossy(p);
+    format!(
+        "{p} looks like a stow directory (its subfolders look like packages); \
+         to compare against its packages, pass --dotfiles {p}"
+    )
 }
 
 fn resolve_home(arg: Option<&Path>) -> Result<PathBuf> {

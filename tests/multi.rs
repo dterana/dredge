@@ -403,3 +403,230 @@ fn every_listed_dir_inside_home_is_left_out_of_the_walk() {
     );
     assert!(lines[0].contains(&*b.to_string_lossy()), "{stderr}");
 }
+
+// ---- the stow-directory hint ----
+
+/// A synthetic repo shaped like a stow repo with several stow directories:
+/// `dotfiles-common` plus one directory per profile, a `.profile-name` file
+/// and other top-level folders that are not stow directories. Home links
+/// into `dotfiles-common` and `dotfiles-personal`.
+fn genesis_like() -> Env {
+    let e = Env::new();
+    let g = "genesis";
+    let w = |rel: &str, c: &str| e.w(&format!("{g}/{rel}"), c);
+    w(".profile-name", "personal\n");
+    w(".github/workflows/ci.yml", "on: push\n");
+    w("Scripts/setup.sh", "echo setup\n");
+    w("Scripts/lib/util.sh", "echo util\n");
+    w("brewfile-professional/Brewfile", "brew \"git\"\n");
+    w("herdr-app-mods/patch.diff", "--- a\n");
+    w("vscode-professional/settings.json", "{}\n");
+    w("dotfiles-common/zsh/.zshrc", "export A=1\n");
+    w("dotfiles-common/zsh/.zprofile", "export B=1\n");
+    w("dotfiles-common/nvim/.config/nvim/init.lua", "set nu\n");
+    w("dotfiles-common/git/.gitconfig", "[user]\n");
+    w("dotfiles-common/starship/.config/starship.toml", "x = 1\n");
+    w("dotfiles-personal/tmux/.tmux.conf", "set -g mouse on\n");
+    w("dotfiles-personal/ruby/.gemrc", "gem: --no-doc\n");
+    w("dotfiles-professional/aws/.aws/config", "[default]\n");
+    w(
+        "dotfiles-professional/kube/.kube/config",
+        "apiVersion: v1\n",
+    );
+    // Finder leaves these everywhere; they do not make a folder a package.
+    w("dotfiles-common/.DS_Store", "\0\0\0\x01Bud1");
+    let c = format!("{g}/dotfiles-common");
+    let p = format!("{g}/dotfiles-personal");
+    e.link(".zshrc", &format!("{c}/zsh/.zshrc"));
+    e.link(".zprofile", &format!("{c}/zsh/.zprofile"));
+    e.link(".gitconfig", &format!("{c}/git/.gitconfig"));
+    e.link(".config/nvim", &format!("{c}/nvim/.config/nvim"));
+    e.link(
+        ".config/starship.toml",
+        &format!("{c}/starship/.config/starship.toml"),
+    );
+    e.link(".tmux.conf", &format!("{p}/tmux/.tmux.conf"));
+    // A regular copy in sync with the personal profile.
+    e.h(".gemrc", "gem: --no-doc\n");
+    e
+}
+
+fn hint_lines(stderr: &str) -> Vec<&str> {
+    stderr
+        .lines()
+        .filter(|l| l.contains("looks like a stow directory"))
+        .collect()
+}
+
+#[test]
+fn hint_names_each_stow_directory_inside_a_repo_root() {
+    let e = genesis_like();
+    let rep = e.run(&["genesis"]);
+    let root = e.p("genesis");
+    let hints: Vec<&String> = rep
+        .notes
+        .iter()
+        .filter(|n| n.contains("looks like a stow directory"))
+        .collect();
+    assert_eq!(hints.len(), 3, "{hints:?}");
+    for (hint, name) in hints.iter().zip([
+        "dotfiles-common",
+        "dotfiles-personal",
+        "dotfiles-professional",
+    ]) {
+        let path = root.join(name).to_string_lossy().into_owned();
+        assert!(
+            hint.starts_with(&format!(
+                "{path} looks like a stow directory (its subfolders look like packages)"
+            )),
+            "{hint}"
+        );
+        assert!(hint.ends_with(&format!("--dotfiles {path}")), "{hint}");
+    }
+    // Notes never reach the rendered report.
+    let mut quiet = rep.clone();
+    quiet.notes.clear();
+    assert!(render_json(&rep) == render_json(&quiet));
+    assert!(render_human(&rep, false, true) == render_human(&quiet, false, true));
+}
+
+#[test]
+fn hint_stays_quiet_for_real_packages() {
+    let e = Env::new();
+    // Real packages: a dot entry at the top, one plain file, or a single
+    // subdirectory with a dot entry.
+    e.w("dots/nvim/.config/nvim/init.lua", "x\n");
+    e.w("dots/zsh/.zshrc", "x\n");
+    e.w("dots/brewfile-professional/Brewfile", "x\n");
+    e.w("dots/single/sub/.x", "x\n");
+    // Two subdirectories, but none with a dot entry.
+    e.w("dots/Scripts/lib/a.sh", "x\n");
+    e.w("dots/Scripts/bin/b.sh", "x\n");
+    // Two package-like subdirectories, but a dot entry at its own top.
+    e.w("dots/mixed/.mixedrc", "x\n");
+    e.w("dots/mixed/a/.a", "x\n");
+    e.w("dots/mixed/b/.b", "x\n");
+    // Package-like subdirectories reached only through symlinks.
+    e.w("elsewhere/a/.a", "x\n");
+    e.w("elsewhere/b/.b", "x\n");
+    fs::create_dir_all(e.p("dots/linked")).unwrap();
+    symlink(e.p("elsewhere/a"), e.p("dots/linked/a")).unwrap();
+    symlink(e.p("elsewhere/b"), e.p("dots/linked/b")).unwrap();
+    // A symlinked top-level directory is not followed.
+    symlink(e.p("elsewhere"), e.p("dots/stowlink")).unwrap();
+    let rep = e.run(&["dots"]);
+    assert!(rep.notes.is_empty(), "{:?}", rep.notes);
+    let out = e.bin(&["dots"]).output().unwrap();
+    assert!(
+        out.stderr.is_empty(),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+}
+
+#[test]
+fn hint_needs_two_package_like_subdirectories() {
+    let e = Env::new();
+    e.w("dots/sub/one/.a", "x\n");
+    e.w("dots/sub/plain/file", "x\n");
+    assert!(e.run(&["dots"]).notes.is_empty());
+    e.w("dots/sub/two/.b", "x\n");
+    assert_eq!(e.run(&["dots"]).notes.len(), 1);
+    // A dot entry at the top of `sub` silences it again.
+    e.w("dots/sub/.stow-local-ignore", "x\n");
+    assert!(e.run(&["dots"]).notes.is_empty());
+}
+
+#[test]
+fn hint_only_for_stow_layout() {
+    let e = Env::new();
+    e.w("dots/dot_zshrc", "x\n");
+    e.w("dots/sub/one/.a", "x\n");
+    e.w("dots/sub/two/.b", "x\n");
+    // Auto picks chezmoi here, and chezmoi has no packages.
+    assert!(e.run(&["dots"]).notes.is_empty());
+    let forced = scan::run(&e.args(&["dots"], &["--layout", "stow"])).unwrap();
+    assert_eq!(forced.notes.len(), 1);
+}
+
+#[test]
+fn genesis_like_repo_root_versus_its_stow_directories() {
+    let e = genesis_like();
+    // The repo root: hint printed, report degraded.
+    let root = e.bin(&["genesis"]).output().unwrap();
+    let stderr = String::from_utf8_lossy(&root.stderr);
+    let hints = hint_lines(&stderr);
+    assert_eq!(hints.len(), 3, "{stderr}");
+    assert_eq!(stderr.lines().count(), 3, "{stderr}");
+    for h in &hints {
+        assert!(h.starts_with("dredge: note: "), "{stderr}");
+    }
+    for name in [
+        "dotfiles-common",
+        "dotfiles-personal",
+        "dotfiles-professional",
+    ] {
+        let path = e.p("genesis").join(name).to_string_lossy().into_owned();
+        assert!(
+            hints
+                .iter()
+                .any(|h| h.ends_with(&format!("--dotfiles {path}"))),
+            "{stderr}"
+        );
+    }
+    let stdout = String::from_utf8_lossy(&root.stdout);
+    assert!(
+        stdout.contains("IN REPO, MISSING ON THIS MACHINE"),
+        "{stdout}"
+    );
+    assert!(stdout.contains("~/zsh/.zshrc"), "{stdout}");
+    assert!(stdout.contains("UNTRACKED CONFIG"), "{stdout}");
+
+    // Its stow directories: no hint, correct tracking, nothing missing.
+    let dirs = ["genesis/dotfiles-common", "genesis/dotfiles-personal"];
+    let good = e.bin(dirs.as_slice()).output().unwrap();
+    assert!(
+        good.stderr.is_empty(),
+        "{}",
+        String::from_utf8_lossy(&good.stderr)
+    );
+    assert_eq!(good.status.code(), Some(0));
+    let stdout = String::from_utf8_lossy(&good.stdout);
+    assert!(!stdout.contains("MISSING ON THIS MACHINE"), "{stdout}");
+    let json = e.bin(dirs.as_slice()).arg("--json").output().unwrap();
+    let v: serde_json::Value = serde_json::from_slice(&json.stdout).unwrap();
+    assert_eq!(v["missing_on_machine"], serde_json::json!([]));
+    let rep = e.run(&dirs);
+    for rel in [
+        ".zshrc",
+        ".zprofile",
+        ".gitconfig",
+        ".config/nvim",
+        ".config/starship.toml",
+        ".tmux.conf",
+        ".gemrc",
+    ] {
+        assert_eq!(unit(&rep, rel).tracking, Tracking::Tracked, "{rel}");
+    }
+    assert!(rep.missing_on_machine.is_empty());
+    // The professional profile is simply not compared.
+    let prof = e.run(&["genesis/dotfiles-common", "genesis/dotfiles-professional"]);
+    assert_eq!(unit(&prof, ".tmux.conf").tracking, Tracking::Untracked);
+    assert_eq!(
+        prof.missing_on_machine,
+        vec![PathBuf::from(".aws/config"), PathBuf::from(".kube/config")]
+    );
+}
+
+#[test]
+fn hint_reads_a_bounded_number_of_entries() {
+    let e = Env::new();
+    e.w("dots/big/one/.a", "x\n");
+    e.w("dots/big/two/.b", "x\n");
+    assert_eq!(e.run(&["dots"]).notes.len(), 1);
+    // Past the per-directory entry cap the directory is left alone.
+    for i in 0..1100 {
+        e.w(&format!("dots/big/f{i:04}"), "x\n");
+    }
+    assert!(e.run(&["dots"]).notes.is_empty());
+}

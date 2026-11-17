@@ -246,6 +246,72 @@ fn chezmoi_root(dir: &Path) -> PathBuf {
     }
 }
 
+/// Most entries the stow-directory hint reads from one directory; a larger
+/// directory is left alone.
+const HINT_MAX_ENTRIES: usize = 1024;
+
+/// Most subdirectories of one candidate the hint looks inside.
+const HINT_MAX_PROBES: usize = 32;
+
+/// Children of `dir` with their type, without following symlinks, sorted by
+/// name. `None` when `dir` cannot be read or has more than `HINT_MAX_ENTRIES`.
+fn bounded_children(dir: &Path) -> Option<Vec<(String, std::fs::FileType)>> {
+    let mut out = Vec::new();
+    for e in std::fs::read_dir(dir).ok()? {
+        if out.len() == HINT_MAX_ENTRIES {
+            return None;
+        }
+        let e = e.ok()?;
+        let ft = e.file_type().ok()?;
+        out.push((e.file_name().to_string_lossy().into_owned(), ft));
+    }
+    out.sort_by(|a, b| a.0.cmp(&b.0));
+    Some(out)
+}
+
+/// A dot-prefixed name that a package would hold. Finder's `.DS_Store`
+/// appears in any folder, so it does not count.
+fn is_dot_entry(name: &str) -> bool {
+    name.starts_with('.') && name != ".DS_Store"
+}
+
+/// True if `dir` looks like a stow directory of packages rather than a
+/// package: no dot entry at its own top level, and at least two real
+/// subdirectories that each hold a dot entry.
+fn looks_like_stow_dir(dir: &Path) -> bool {
+    let Some(children) = bounded_children(dir) else {
+        return false;
+    };
+    if children.iter().any(|(n, _)| is_dot_entry(n)) {
+        return false;
+    }
+    let packages = children
+        .iter()
+        .filter(|(_, ft)| ft.is_dir())
+        .take(HINT_MAX_PROBES)
+        .filter(|(n, _)| {
+            bounded_children(&dir.join(n))
+                .is_some_and(|sub| sub.iter().any(|(n, _)| is_dot_entry(n)))
+        })
+        .take(2)
+        .count();
+    packages >= 2
+}
+
+/// Top-level directories of a stow repo `dir` that look like stow
+/// directories themselves (their subfolders look like packages), sorted.
+/// Symlinks are never followed and every directory read is bounded.
+pub fn stow_dir_hints(dir: &Path) -> Vec<PathBuf> {
+    let Some(top) = bounded_children(dir) else {
+        return Vec::new();
+    };
+    top.into_iter()
+        .filter(|(n, ft)| ft.is_dir() && !n.starts_with('.'))
+        .map(|(n, _)| dir.join(n))
+        .filter(|p| looks_like_stow_dir(p))
+        .collect()
+}
+
 impl Index {
     /// Fails only when `dir` itself cannot be read; an unreadable
     /// subdirectory is recorded in [`Index::unreadable`] and skipped.
