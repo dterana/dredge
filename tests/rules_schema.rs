@@ -2,6 +2,8 @@ use std::collections::HashSet;
 use std::fs;
 use std::path::Path;
 
+use dredge::classify::classify;
+use dredge::model::Kind;
 use dredge::rules::Rules;
 use dredge::secrets::{scan_file, SecretRules};
 
@@ -286,4 +288,77 @@ fn every_enabled_rule_has_a_detection_case_and_only_it_fires() {
         let found = scan_file(&p, &rules).unwrap();
         assert!(found.is_empty(), "near miss for {id} fired {found:?}");
     }
+}
+
+fn class(p: &str) -> (Option<String>, Kind) {
+    classify(Path::new(p), &Rules::embedded())
+}
+
+#[test]
+fn gcloud_config_rule_covers_only_configurations() {
+    let config = (Some("gcloud".to_string()), Kind::Config);
+    assert_eq!(class(".config/gcloud/configurations/config_default"), config);
+    assert_eq!(class(".config/gcloud/active_config"), config);
+    assert_eq!(
+        class(".config/gcloud/logs/2026.11.16/x.log"),
+        (Some("gcloud".to_string()), Kind::State)
+    );
+    // Credential stores are never nudged toward tracking as config.
+    for p in [
+        ".config/gcloud/access_tokens.db",
+        ".config/gcloud/credentials.db",
+        ".config/gcloud/legacy_credentials/me@example.com/adc.json",
+        ".config/gcloud/application_default_credentials.json",
+    ] {
+        let (app, kind) = class(p);
+        assert_ne!(kind, Kind::Config, "{p}");
+        assert_eq!(app, None, "{p}");
+    }
+}
+
+#[test]
+fn macos_system_files_are_state() {
+    let state = (Some("macos".to_string()), Kind::State);
+    for p in [
+        ".DS_Store",
+        ".CFUserTextEncoding",
+        ".localized",
+        ".Trash/old.txt",
+        ".Trash/dir/nested.bin",
+    ] {
+        assert_eq!(class(p), state, "{p}");
+    }
+}
+
+fn fired(line: &str) -> Vec<String> {
+    let dir = tempfile::tempdir().unwrap();
+    let p = dir.path().join("sample.txt");
+    fs::write(&p, format!("{line}\n")).unwrap();
+    scan_file(&p, &SecretRules::embedded())
+        .unwrap()
+        .into_iter()
+        .map(|f| f.rule_id)
+        .collect()
+}
+
+#[test]
+fn ngrok_authtoken_matches_yaml_and_env_forms_but_not_npm() {
+    let fake = rep("a1", 15);
+    assert_eq!(fired(&format!("authtoken: {fake}")), vec!["ngrok-authtoken"]);
+    assert_eq!(
+        fired(&format!("export {}={fake}", "NGROK_AUTHTOKEN")),
+        vec!["ngrok-authtoken"]
+    );
+    assert_eq!(
+        fired(&format!("{}=\"{fake}\"", "ngrok_authtoken")),
+        vec!["ngrok-authtoken"]
+    );
+    // npm's `_authToken` is not an ngrok token.
+    let npm = format!("{}{}", "npm_", rep("a", 36));
+    assert_eq!(
+        fired(&format!("//registry.npmjs.org/:_authToken={npm}")),
+        vec!["npm-access-token"]
+    );
+    assert!(fired(&format!("//registry.npmjs.org/:_authToken={fake}")).is_empty());
+    assert!(fired(&format!("MY_AUTHTOKEN={fake}")).is_empty());
 }

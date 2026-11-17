@@ -241,8 +241,8 @@ description = "Google Cloud CLI logs"
 [[rule]]
 app = "gcloud"
 kind = "config"
-globs = [".config/gcloud/**"]
-description = "Google Cloud CLI configuration"
+globs = [".config/gcloud/configurations/**", ".config/gcloud/active_config"]
+description = "Google Cloud CLI named configurations (credential stores stay unknown)"
 
 [[rule]]
 app = "kubectl"
@@ -495,3 +495,9 @@ app = "herdr"
 kind = "config"
 globs = [".config/herdr/**"]
 description = "herdr configuration"
+
+[[rule]]
+app = "macos"
+kind = "state"
+globs = [".DS_Store", ".CFUserTextEncoding", ".localized", ".Trash/**"]
+description = "macOS Finder metadata, text encoding preference and Trash contents"
