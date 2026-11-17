@@ -155,16 +155,25 @@ fn run_inner(args: &ScanArgs, progress: &mut Progress) -> Result<Report> {
                 .take_while(|a| *a != u.path)
                 .all(|a| !prune(a, false))
     };
+    // Units by path, so each link looks only at its own ancestors (deepest
+    // first) instead of at every unit.
+    let unit_at: HashMap<&Path, usize> = walked
+        .units
+        .iter()
+        .enumerate()
+        .map(|(i, u)| (u.path.as_path(), i))
+        .collect();
     let mut nested: Vec<Vec<PathBuf>> = vec![Vec::new(); walked.units.len()];
     let mut root_links = Vec::new();
     for link in walked.symlinks {
-        let owner = walked
-            .units
-            .iter()
-            .enumerate()
-            .filter(|(_, u)| found_by(u, &link))
-            .max_by_key(|(_, u)| u.path.components().count())
-            .map(|(i, _)| i);
+        let owner = link.ancestors().skip(1).find_map(|a| {
+            let i = *unit_at.get(a)?;
+            walked
+                .units
+                .get(i)
+                .filter(|u| found_by(u, &link))
+                .map(|_| i)
+        });
         match owner {
             Some(i) => nested[i].push(link),
             None => root_links.push(link),

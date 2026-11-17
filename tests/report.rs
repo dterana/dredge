@@ -1560,3 +1560,96 @@ fn collapsed_output_is_the_same_for_any_worker_count() {
         assert_eq!(one.status.code(), eight.status.code());
     }
 }
+
+// ---- collapsing finding rows scales to large inputs ----
+
+fn finding(rule: &str, path: &Path, line: usize, committed: bool) -> dredge::model::Finding {
+    dredge::model::Finding {
+        rule_id: rule.to_string(),
+        path: path.to_path_buf(),
+        line,
+        committed,
+    }
+}
+
+fn one_unit_report(
+    findings: Vec<dredge::model::Finding>,
+    committed: Vec<dredge::model::Finding>,
+) -> Report {
+    let home = PathBuf::from("/h");
+    Report {
+        units: vec![dredge::model::Unit {
+            path: home.join(".config/big"),
+            app: None,
+            kind: Kind::Unknown,
+            tracking: Tracking::Untracked,
+            findings,
+            ignored: false,
+            symlink: false,
+            drifted: Vec::new(),
+        }],
+        committed_findings: committed,
+        home,
+        dotfiles: vec![PathBuf::from("/d")],
+        ..Report::default()
+    }
+}
+
+#[test]
+fn collapsing_many_distinct_findings_is_fast() {
+    const N: usize = 200_000;
+    let file = Path::new("/h/.config/big/tokens.txt");
+    let repo = Path::new("/d/pkg/tokens.txt");
+    let mut findings: Vec<_> = (1..=N)
+        .map(|l| finding("github-token", file, l, false))
+        .collect();
+    let mut committed: Vec<_> = (1..=N)
+        .map(|l| finding("github-token", repo, l, true))
+        .collect();
+    // One duplicate in each list, so a row carries a count.
+    findings.push(finding("github-token", file, 7, false));
+    committed.push(finding("github-token", repo, 9, true));
+    let rep = one_unit_report(findings, committed);
+    let (tx, rx) = std::sync::mpsc::channel();
+    std::thread::spawn(move || {
+        let start = std::time::Instant::now();
+        let out = render_human(&rep, false, false);
+        let _ = tx.send((out, start.elapsed()));
+    });
+    let (out, took) = rx
+        .recv_timeout(std::time::Duration::from_secs(10))
+        .expect("render_human took longer than 10 s");
+    assert!(took < std::time::Duration::from_secs(10));
+    let rows = |needle: &str| out.lines().filter(|l| l.contains(needle)).count();
+    assert_eq!(rows("~/.config/big/tokens.txt "), N);
+    assert_eq!(rows("d/pkg/tokens.txt "), N);
+    assert!(out.contains(
+        "~/.config/big/tokens.txt                     SECRET  rule: github-token, line 7  (x2)\n"
+    ));
+    assert!(out.contains("rule: github-token, line 9  (x2)\n"));
+    assert_eq!(out.matches("(x2)").count(), 2);
+}
+
+#[test]
+fn collapsed_rows_keep_first_appearance_order() {
+    let file = Path::new("/h/.config/big/f.txt");
+    let a = || finding("github-token", file, 1, false);
+    let b = || finding("aws-access-key-id", file, 1, false);
+    let c = || finding("github-token", file, 2, false);
+    let rep = one_unit_report(vec![a(), b(), a(), c(), b(), a()], Vec::new());
+    let out = render_human(&rep, false, false);
+    let rows: Vec<&str> = out
+        .lines()
+        .filter(|l| l.contains("~/.config/big/f.txt "))
+        .collect();
+    assert_eq!(rows.len(), 3, "{out}");
+    assert!(
+        rows[0].ends_with("rule: github-token, line 1  (x3)"),
+        "{out}"
+    );
+    assert!(
+        rows[1].ends_with("rule: aws-access-key-id, line 1  (x2)"),
+        "{out}"
+    );
+    assert!(rows[2].ends_with("rule: github-token, line 2"), "{out}");
+}

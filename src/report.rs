@@ -8,6 +8,8 @@
 //! section, and is printed only when it has entries. Past `MISSING_CAP`
 //! entries it shows the count and, without `--all`, only the first ones.
 
+use std::collections::hash_map::Entry;
+use std::collections::HashMap;
 use std::fmt::Write as _;
 use std::path::Path;
 
@@ -136,16 +138,22 @@ fn finding_text(f: &Finding) -> String {
 }
 
 /// Findings with the same rule, path and line folded into one row with a
-/// count, in order of first appearance. Human output only.
+/// count, in order of first appearance. Linear time: each key maps to its
+/// row. Human output only.
 fn collapse<'a>(findings: impl IntoIterator<Item = &'a Finding>) -> Vec<(&'a Finding, usize)> {
     let mut rows: Vec<(&Finding, usize)> = Vec::new();
+    let mut index: HashMap<(&str, &Path, usize), usize> = HashMap::new();
     for f in findings {
-        let same = |(g, _): &&mut (&Finding, usize)| {
-            g.rule_id == f.rule_id && g.path == f.path && g.line == f.line
-        };
-        match rows.iter_mut().find(same) {
-            Some(row) => row.1 += 1,
-            None => rows.push((f, 1)),
+        match index.entry((f.rule_id.as_str(), f.path.as_path(), f.line)) {
+            Entry::Occupied(e) => {
+                if let Some(row) = rows.get_mut(*e.get()) {
+                    row.1 += 1;
+                }
+            }
+            Entry::Vacant(e) => {
+                e.insert(rows.len());
+                rows.push((f, 1));
+            }
         }
     }
     rows
