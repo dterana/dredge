@@ -1,6 +1,7 @@
 #![cfg_attr(not(test), deny(clippy::unwrap_used, clippy::expect_used))]
 
 use std::io::{ErrorKind, IsTerminal, Write};
+use std::panic::{self, AssertUnwindSafe};
 use std::process::ExitCode;
 
 use clap::Parser;
@@ -10,6 +11,19 @@ use dredge::progress::{self, Progress};
 use dredge::{exit, report, scan};
 
 fn main() -> ExitCode {
+    // A panic prints nothing of its own (its message could carry content);
+    // it becomes one fixed line and exit code 2.
+    scan::silence_panics();
+    match panic::catch_unwind(AssertUnwindSafe(run)) {
+        Ok(code) => code,
+        Err(_) => {
+            say("dredge: internal error: the scan stopped unexpectedly");
+            ExitCode::from(2)
+        }
+    }
+}
+
+fn run() -> ExitCode {
     let cli = Cli::parse();
     let Command::Scan(args) = cli.command;
     let stderr = std::io::stderr();

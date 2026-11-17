@@ -91,6 +91,13 @@ impl Progress {
     }
 }
 
+/// Clears the line even when a panic unwinds past the owner.
+impl Drop for Progress {
+    fn drop(&mut self) {
+        self.finish();
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use std::cell::RefCell;

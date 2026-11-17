@@ -34,6 +34,9 @@ const PREFERENCES: &str = "Library/Preferences";
 /// Upper bound on the default number of unit-scanning workers.
 const MAX_DEFAULT_JOBS: usize = 8;
 
+/// Upper bound on worker threads, whatever `--jobs` asks for.
+const MAX_JOBS: usize = 64;
+
 /// How often the main thread refreshes the progress line while workers run.
 const PROGRESS_POLL: Duration = Duration::from_millis(100);
 
@@ -208,16 +211,31 @@ fn in_background<R: Send>(
 ) -> Result<R> {
     let main = thread::current();
     thread::scope(|s| {
-        let handle = s.spawn(move || {
-            let r = work();
-            main.unpark();
-            r
-        });
+        let handle = thread::Builder::new()
+            .spawn_scoped(s, move || {
+                let r = work();
+                main.unpark();
+                r
+            })
+            .map_err(|_| anyhow!("internal error: cannot start the walk thread"))?;
         poll(progress, counter, show, || handle.is_finished());
         handle
             .join()
             .map_err(|_| anyhow!("internal error: the walk stopped unexpectedly"))
     })
+}
+
+/// Replaces the default panic hook with one that prints nothing. A panic
+/// message or location could carry content; every panic is instead reported
+/// by the caller as a one-line internal error.
+pub fn silence_panics() {
+    std::panic::set_hook(Box::new(|_| {}));
+}
+
+/// Workers for `items` units when `jobs` are asked for: at most `MAX_JOBS`,
+/// at most one per item, at least one.
+fn worker_count(jobs: usize, items: usize) -> usize {
+    jobs.min(MAX_JOBS).min(items).max(1)
 }
 
 /// Shows `counter` every `PROGRESS_POLL` (or sooner when unparked) until
@@ -238,8 +256,9 @@ fn poll(
 /// Applies `f` to every item on up to `jobs` scoped worker threads and returns
 /// the results in item order, whatever the worker count. Workers claim items
 /// through an atomic index and keep their results local; nothing is locked.
-/// Meanwhile this thread shows `counter` on `progress`. A worker that panics
-/// turns into an error that carries no item content.
+/// Meanwhile this thread shows `counter` on `progress`. Any worker panic
+/// turns into one error that carries no item content. If some workers cannot
+/// be started the others do all the work; if none can, that is an error.
 fn par_map<T, R, F>(
     items: &[T],
     jobs: usize,
@@ -252,41 +271,56 @@ where
     R: Send,
     F: Fn(&T) -> R + Sync,
 {
-    let workers = jobs.min(items.len()).max(1);
+    let workers = worker_count(jobs, items.len());
     let next = AtomicUsize::new(0);
     let mut slots: Vec<Option<R>> = items.iter().map(|_| None).collect();
     let main = thread::current();
     thread::scope(|s| -> Result<()> {
-        let handles: Vec<_> = (0..workers)
-            .map(|_| {
-                let main = main.clone();
-                let (next, f) = (&next, &f);
-                s.spawn(move || {
-                    let mut done = Vec::new();
-                    loop {
-                        let i = next.fetch_add(1, Ordering::Relaxed);
-                        let Some(item) = items.get(i) else {
-                            break;
-                        };
-                        done.push((i, f(item)));
-                    }
-                    main.unpark();
-                    done
-                })
-            })
-            .collect();
+        let mut handles = Vec::with_capacity(workers);
+        for _ in 0..workers {
+            let main = main.clone();
+            let (next, f) = (&next, &f);
+            let spawned = thread::Builder::new().spawn_scoped(s, move || {
+                let mut done = Vec::new();
+                loop {
+                    let i = next.fetch_add(1, Ordering::Relaxed);
+                    let Some(item) = items.get(i) else {
+                        break;
+                    };
+                    done.push((i, f(item)));
+                }
+                main.unpark();
+                done
+            });
+            match spawned {
+                Ok(h) => handles.push(h),
+                Err(_) => break,
+            }
+        }
+        if handles.is_empty() {
+            bail!("internal error: cannot start a scan worker thread");
+        }
         poll(progress, counter, Progress::tick, || {
             handles.iter().all(|h| h.is_finished())
         });
-        for h in handles {
-            let done = h
-                .join()
-                .map_err(|_| anyhow!("internal error: a scan worker stopped unexpectedly"))?;
-            for (i, r) in done {
-                if let Some(slot) = slots.get_mut(i) {
-                    *slot = Some(r);
+        // Join every worker before looking at any result: a scoped thread
+        // left unjoined after a panic would make the scope itself panic.
+        let joined: Vec<_> = handles.into_iter().map(|h| h.join()).collect();
+        let mut failed = false;
+        for j in joined {
+            match j {
+                Ok(done) => {
+                    for (i, r) in done {
+                        if let Some(slot) = slots.get_mut(i) {
+                            *slot = Some(r);
+                        }
+                    }
                 }
+                Err(_) => failed = true,
             }
+        }
+        if failed {
+            bail!("internal error: a scan worker stopped unexpectedly");
         }
         Ok(())
     })?;
@@ -675,6 +709,98 @@ mod tests {
             let msg = format!("{:#}", r.err().unwrap());
             assert_eq!(msg, "internal error: a scan worker stopped unexpectedly");
         }
+    }
+
+    #[test]
+    fn panics_in_several_workers_are_one_clean_error() {
+        let items: Vec<usize> = (0..400).collect();
+        for jobs in [2, 4, 8] {
+            let counter = AtomicUsize::new(0);
+            let caught = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                par_map(&items, jobs, &mut Progress::disabled(), &counter, |&i| {
+                    if i % 50 == 0 {
+                        thread::sleep(Duration::from_millis(5));
+                        panic!("boom");
+                    }
+                    i
+                })
+            }));
+            let r = caught.unwrap_or_else(|_| panic!("par_map panicked with jobs {jobs}"));
+            let msg = format!("{:#}", r.err().unwrap());
+            assert_eq!(msg, "internal error: a scan worker stopped unexpectedly");
+        }
+    }
+
+    #[test]
+    fn worker_count_is_clamped() {
+        assert_eq!(worker_count(100_000, 1_000), MAX_JOBS);
+        assert_eq!(worker_count(100_000, 3), 3);
+        assert_eq!(worker_count(4, 0), 1);
+        assert_eq!(worker_count(1, 500), 1);
+        assert_eq!(MAX_JOBS, 64);
+        // Observed: no more than MAX_JOBS distinct threads do the work.
+        let items: Vec<usize> = (0..1_000).collect();
+        let seen = std::sync::Mutex::new(std::collections::HashSet::new());
+        let counter = AtomicUsize::new(0);
+        par_map(&items, 100_000, &mut Progress::disabled(), &counter, |_| {
+            thread::sleep(Duration::from_millis(1));
+            if let Ok(mut s) = seen.lock() {
+                s.insert(thread::current().id());
+            }
+        })
+        .unwrap();
+        let n = seen.lock().unwrap().len();
+        assert!((1..=MAX_JOBS).contains(&n), "{n} threads");
+    }
+
+    /// Run only as a child of `worker_panic_prints_nothing_of_its_own`.
+    #[test]
+    #[ignore]
+    fn quiet_panic_child() {
+        if std::env::var_os("DREDGE_QUIET_PANIC_CHILD").is_none() {
+            return;
+        }
+        crate::scan::silence_panics();
+        let items: Vec<usize> = (0..100).collect();
+        let counter = AtomicUsize::new(0);
+        let r = par_map(&items, 4, &mut Progress::disabled(), &counter, |&i| {
+            if i % 10 == 0 {
+                panic!("boom-payload at item {i}");
+            }
+            i
+        });
+        println!(
+            "RESULT: {:#}",
+            r.err().map(|e| format!("{e:#}")).unwrap_or_default()
+        );
+    }
+
+    #[test]
+    fn worker_panic_prints_nothing_of_its_own() {
+        let exe = std::env::current_exe().unwrap();
+        let out = std::process::Command::new(exe)
+            .args([
+                "--exact",
+                "scan::tests::quiet_panic_child",
+                "--ignored",
+                "--nocapture",
+                "--test-threads=1",
+            ])
+            .env("DREDGE_QUIET_PANIC_CHILD", "1")
+            .output()
+            .unwrap();
+        let stdout = String::from_utf8_lossy(&out.stdout);
+        let stderr = String::from_utf8_lossy(&out.stderr);
+        assert!(
+            stdout.contains("RESULT: internal error: a scan worker stopped unexpectedly"),
+            "{stdout}"
+        );
+        assert!(!stderr.contains("panicked"), "{stderr}");
+        assert!(
+            !stderr.contains("boom") && !stdout.contains("boom"),
+            "{stderr}"
+        );
+        assert!(!stderr.contains("scan.rs"), "{stderr}");
     }
 
     #[test]
