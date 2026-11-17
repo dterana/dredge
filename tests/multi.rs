@@ -630,3 +630,39 @@ fn hint_reads_a_bounded_number_of_entries() {
     }
     assert!(e.run(&["dots"]).notes.is_empty());
 }
+
+#[test]
+fn two_dirs_report_is_the_same_for_jobs_1_and_8() {
+    let e = genesis_like();
+    // Some extra content in every section.
+    let token = fake_token();
+    e.w(
+        "genesis/dotfiles-personal/shell/.envrc",
+        &format!("export GITHUB_TOKEN={token}\n"),
+    );
+    e.h(".config/ngrok/ngrok.yml", "version: 2\n");
+    for i in 0..30 {
+        e.h(&format!(".config/unk{i:02}/a.conf"), "x = 1\n");
+        e.w(&format!("genesis/dotfiles-common/m{i:02}/.m{i:02}"), "x\n");
+    }
+    e.h(".gemrc", "drifted\n");
+    let dirs = ["genesis/dotfiles-common", "genesis/dotfiles-personal"];
+    for extra in [&[][..], &["--json"], &["--all"], &["--json", "--all"]] {
+        let run = |jobs: &str| {
+            e.bin(dirs.as_slice())
+                .args(["--jobs", jobs])
+                .args(extra)
+                .output()
+                .unwrap()
+        };
+        let one = run("1");
+        let eight = run("8");
+        assert_eq!(one.status.code(), Some(1), "{extra:?}");
+        assert!(one.stdout == eight.stdout, "{extra:?}: stdout differs");
+        assert!(one.stderr == eight.stderr, "{extra:?}: stderr differs");
+        assert_eq!(one.status.code(), eight.status.code());
+        let text = String::from_utf8_lossy(&one.stdout);
+        assert!(!text.contains(&token[..12]), "secret prefix leaked");
+        assert!(text.contains("github-token"), "{extra:?}");
+    }
+}

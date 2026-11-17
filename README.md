@@ -19,10 +19,16 @@ cargo build --release
 dredge scan --dotfiles ~/dotfiles
 ```
 
+A repository that holds several stow directories (for example one shared directory plus one per machine profile) is compared by passing each directory that applies to this machine:
+
+```sh
+dredge scan --dotfiles ~/genesis/dotfiles-common --dotfiles ~/genesis/dotfiles-personal
+```
+
 | Flag | Meaning |
 | --- | --- |
-| `--dotfiles <PATH>` | Path to the dotfiles repository. If omitted, only chezmoi's default source directory (`~/.local/share/chezmoi`) is auto-detected. |
-| `--layout <auto\|stow\|chezmoi>` | Repository layout. `auto` (default) picks chezmoi if the directory contains `.chezmoiroot`, `.chezmoiignore`, or names starting with `dot_`, otherwise stow. |
+| `--dotfiles <PATH>` | Path to a dotfiles directory, repeatable. Every path must be an existing directory, otherwise dredge prints one error line naming it and exits 2. The same directory given twice is used once. If omitted, only chezmoi's default source directory (`~/.local/share/chezmoi`) is auto-detected. |
+| `--layout <auto\|stow\|chezmoi>` | Repository layout, applied to every `--dotfiles` directory. `auto` (default) decides for each directory on its own: chezmoi if it contains `.chezmoiroot`, `.chezmoiignore`, or names starting with `dot_`, otherwise stow. |
 | `--root <PATH>` | Extra root directory to scan, repeatable. See "Limits" for roots that overlap. |
 | `--all` | Show everything, including tracked items and known state and cache items. |
 | `--json` | Emit JSON instead of the human report. |
@@ -32,19 +38,22 @@ dredge scan --dotfiles ~/dotfiles
 
 By default dredge walks the top level dot entries of your home directory plus `~/.config`, `~/Library/Application Support` and `~/Library/Preferences`.
 
+With several `--dotfiles` directories, each one is indexed on its own. A home symlink that resolves into any of them is tracked. A regular home file is compared with the first directory, in the order given, that defines it: when two directories define the same file, the earlier `--dotfiles` wins and drift is measured against its copy. The "in repo, missing on this machine" list is the union across all directories.
+
 ## Limits
 
 - Each depth-1 entry under a root is one unit (for example `~/.config/nvim`). Inside a unit the walk goes at most 6 levels deep (a file directly inside the unit directory is level 1); anything deeper is not listed.
 - Only the home directory root is limited to dot entries. Every other root, including each `--root`, lists all of its depth-1 entries.
-- The committed-secrets scan of the dotfiles working tree descends at most 16 levels.
+- The committed-secrets scan descends at most 16 levels into each dotfiles directory. A file reachable from two listed directories (one inside the other) is scanned and reported once.
 - The human report lists at most 20 unknown units, with the total count in the header. `--all` lists every one.
-- The dotfiles directory is never reported as home content, even when it lives inside a scanned root. Its contents are only compared against the live files and scanned for committed secrets.
+- The human report lists at most 20 entries under IN REPO, MISSING ON THIS MACHINE. When there are more, the header shows the total, for example `IN REPO, MISSING ON THIS MACHINE (25)  showing 20, run with --all to list`, and `--all` lists every one. The JSON `missing_on_machine` array always holds the full list.
+- No dotfiles directory is ever reported as home content, even when it lives inside a scanned root. Its contents are only compared against the live files and scanned for committed secrets. In the JSON, `dotfiles` is an array of every directory used (empty when there is none).
 - Files under `~/Library/Preferences` are listed by name only and are never scanned for secrets.
-- A `--root` that is already covered by another root is not walked or listed twice. That means it lies inside a part of that root that is walked, or it is the same path as another root, including when that path is a symlink (for example `--root X` given twice, or `--root ~/.config` when `~/.config` is a symlink). dredge prints one `dredge: note:` line on stderr naming both and the report is the same as without the extra `--root`. A `--root` inside the dotfiles directory is skipped the same way. A `--root` that contains other roots is walked normally, leaving out the subtrees that are themselves roots.
+- A `--root` that is already covered by another root is not walked or listed twice. That means it lies inside a part of that root that is walked, or it is the same path as another root, including when that path is a symlink (for example `--root X` given twice, or `--root ~/.config` when `~/.config` is a symlink). dredge prints one `dredge: note:` line on stderr naming both and the report is the same as without the extra `--root`. A `--root` inside any dotfiles directory is skipped the same way. A `--root` that contains other roots is walked normally, leaving out the subtrees that are themselves roots.
 - Directories that sit at the depth cap are not entered. When there are any, the IGNORED line of the human report is followed by `N directories deeper than 6 levels were not scanned`, and the JSON has the count in `depth_truncated_dirs` (always present, 0 when none).
 - Config and unknown files over 1 MiB are not scanned for secrets. When there are any, the human report adds `N files over 1 MiB were not scanned for secrets` under IGNORED, and the JSON has the count in `skipped_too_large` (always present, 0 when none). Binary files are skipped without being counted. Neither count changes the exit code.
 - Cache and state directories are not entered. A directory is skipped when an app rule says its contents are `cache` or `state`, or, when no app rule covers it, when its name is a recognised cache or state name, compared ignoring ASCII case (so `Cache`, `cache` and `CACHE` all match): `Caches`, `cache`, `.cache`, `node_modules`, `logs`, `tmp`, `GPUCache`, `Crashpad`, the Chromium and Electron storage directories `Code Cache`, `DawnCache`, `DawnGraphiteCache`, `DawnWebGPUCache`, `GrShaderCache`, `ShaderCache`, `Service Worker`, `IndexedDB`, `Local Storage`, `Session Storage`, `blob_storage`, `File System`, `WebStorage`, `Shared Dictionary`, `component_crx_cache` and `Crash Reports`, and the editor directories `CachedData`, `CachedExtensions` and `CachedExtensionVSIXs`. Only the unit's own directory and the directories below it count: a cache-like name above the unit, for example in the path of a `--root`, does not. An app rule of kind `config` that covers the whole directory (`dir/**`) keeps it walked.
-- Files inside a skipped directory are never listed, opened, read or scanned for secrets, even when the directory sits inside an otherwise unknown app folder, so a secret stored there is not reported. In particular, Electron and Chromium storage folders (`Local Storage`, `IndexedDB`, `Session Storage`, `Service Worker` and the like) can hold live app tokens: dredge classifies them as cache or state, never enters them, and so does not scan them for secrets. Earlier versions of dredge did scan them, as unknown files. The rest of the unit is still read and scanned, and so are unknown files everywhere else. A unit whose own directory is skipped (for example `~/.cache`) is still listed, as cache or state, under CACHE/STATE with `--all`. A `--root` that is or lies inside a skipped directory is walked as its own root.
+- Files inside a skipped directory are never listed, opened, read or scanned for secrets, even when the directory sits inside an otherwise unknown app folder, so a secret stored there is not reported. In particular, Electron and Chromium storage folders (`Local Storage`, `IndexedDB`, `Session Storage`, `Service Worker` and the like) can hold live app tokens: dredge classifies them as cache or state, never enters them, and so does not scan them for secrets. Earlier versions of dredge did scan them, as unknown files. The same holds for Visual Studio Code's local file history (`~/Library/Application Support/Code/User/History`), its workspace and global extension storage (`User/workspaceStorage`, `User/globalStorage`) and its installed extensions (`~/.vscode/extensions`): they are state, never entered, and a token saved there is not reported. `User/settings.json` next to them is still config and is scanned. The rest of the unit is still read and scanned, and so are unknown files everywhere else. A unit whose own directory is skipped (for example `~/.cache`) is still listed, as cache or state, under CACHE/STATE with `--all`. A `--root` that is or lies inside a skipped directory is walked as its own root.
 - When any directory was skipped, the IGNORED line of the human report is followed by `N cache/state directories were not entered`. Each skipped directory counts once and nothing inside it is visited, so nested ones are not counted. The JSON has the count in `pruned_dirs` (always present, 0 when none). The `cache/state items` count on the IGNORED line (`cache_state_items` in the JSON) counts only the files that were listed in cache and state units, so it never includes files inside skipped directories. Skipped directories are not counted as depth-capped directories.
 - By default units are scanned on one worker thread per CPU, at most 8. The hidden `--jobs <N>` flag (N at least 1) asks for N workers, for example `--jobs 1`; the worker count is capped at 64 and at the number of units, with at least one worker. The report is the same for any value. The walk and the committed-secrets scan each run on one thread.
 - dredge shows a one line progress count on stderr, only when stderr is a terminal: `dredge: walking... N entries` while it lists directories, then `dredge: scanned N files...` while it reads them. It is cleared before the report is printed, never contains a path, and `--no-progress` turns it off. When stderr is a pipe or a file nothing extra is written.
@@ -89,7 +98,7 @@ Untracked configuration alone exits 0 unless you pass `--fail-on untracked`.
 
 ## .dredgeignore
 
-Place a `.dredgeignore` file at the root of the dotfiles repository to list paths that are intentionally untracked. Ignored paths are excluded from the untracked list only (and so from `--fail-on untracked`); drift and secrets are always reported. Each ignored item is counted in the summary line.
+Place a `.dredgeignore` file at the root of the dotfiles repository to list paths that are intentionally untracked. With several `--dotfiles` directories, the patterns of every `.dredgeignore` found at the root of a listed directory apply together (a directory without one adds nothing). Ignored paths are excluded from the untracked list only (and so from `--fail-on untracked`); drift and secrets are always reported. Each ignored item is counted in the summary line.
 
 The dialect is deliberately small:
 
@@ -122,6 +131,8 @@ The dialect is deliberately small:
 ## Stow and chezmoi support
 
 Stow: packages are the top level directories of the dotfiles repository that do not start with a dot, and their contents are compared with the live files.
+
+Pointing `--dotfiles` at a repository root that holds several stow directories makes each stow directory look like one package, so every path is wrong. When a stow-layout `--dotfiles` directory has a top level directory with no dot entry of its own (Finder's `.DS_Store` aside) but with at least two subdirectories (among its first 32 by name) that each hold a dot entry, dredge prints one `dredge: note:` line on stderr for it, saying it looks like a stow directory and suggesting `--dotfiles` with its path. The note never changes the report, the JSON or the exit code. Symlinks are not followed for this check, and a directory with more than 1,024 entries is not examined.
 
 chezmoi: source names are mapped to target paths and contents are compared. Source entries whose names start with a dot (such as `.git`) are ignored, and `.chezmoiroot` is honored when it names a plain subdirectory. The attributes `dot_`, `private_`, `executable_` and `readonly_` are fully supported. Files with the `.tmpl` suffix are reported as tracked without drift comparison. Entries using `symlink_`, `exact_` or `encrypted_` are reported as `tracked (unverified)`, and so is everything inside a directory marked `exact_`, `symlink_`, `encrypted_`, `create_`, `modify_` or `run_`. Files using `run_`, `modify_` or `create_` are skipped entirely, since they are scripts or templates with no sensible target.
 
