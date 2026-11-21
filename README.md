@@ -1,5 +1,7 @@
 # dredge
 
+Project site: https://dterana.github.io/dredge/
+
 dredge is a read-only command line tool for macOS that looks at your home directory and tells you what your dotfiles repository does not know about. It reports configuration that is not tracked, tracked files that have drifted from the live copy, and secrets (private keys, API tokens) sitting in live config files or already committed to your dotfiles repository. It works with stow layouts, chezmoi source directories, or no dotfiles manager at all. The package name `dredge` is a placeholder.
 
 ## Install
