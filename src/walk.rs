@@ -399,6 +399,29 @@ fn walk_dir(
     }
 }
 
+/// Files under a `--watch` directory: no prune predicate, depth counted from
+/// `dir` (a file directly inside it is depth 1, same `MAX_DEPTH` cap).
+/// Symlinks inside are not followed and not returned. Sorted.
+pub fn watch_dir(dir: &Path) -> WalkResult {
+    let mut result = WalkResult::default();
+    let mut files = Vec::new();
+    walk_dir(
+        dir,
+        1,
+        &[],
+        &WalkOptions::default(),
+        &mut files,
+        &mut result,
+    );
+    files.sort();
+    result.units.push(UnitFiles {
+        path: dir.to_path_buf(),
+        files,
+        pruned: false,
+    });
+    result
+}
+
 fn is_dot(name: &OsStr) -> bool {
     name.to_string_lossy().starts_with('.')
 }

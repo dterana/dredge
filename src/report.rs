@@ -400,6 +400,15 @@ pub fn render_human(report: &Report, color: bool, all: bool) -> String {
             thousands(n)
         );
     }
+    if report.watched_scanned > 0 {
+        let n = report.watched_scanned;
+        let noun = if n == 1 { "path" } else { "paths" };
+        let _ = writeln!(
+            out.buf,
+            "  {} {noun} force-scanned with --watch",
+            thousands(n)
+        );
+    }
     if report.skipped_too_large > 0 {
         let n = report.skipped_too_large;
         let (noun, verb) = if n == 1 {

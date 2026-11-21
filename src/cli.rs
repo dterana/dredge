@@ -45,6 +45,11 @@ pub struct ScanArgs {
     #[arg(long)]
     pub root: Vec<PathBuf>,
 
+    /// Force a secret scan of a path the normal walk skips (repeatable).
+    /// Symlinks, non-regular files and files over 1 MiB are still not read
+    #[arg(long)]
+    pub watch: Vec<PathBuf>,
+
     /// Show everything, including tracked items
     #[arg(long)]
     pub all: bool,
