@@ -30,6 +30,7 @@ dredge scan --dotfiles ~/genesis/dotfiles-common --dotfiles ~/genesis/dotfiles-p
 | `--dotfiles <PATH>` | Path to a dotfiles directory, repeatable. Every path must be an existing directory, otherwise dredge prints one error line naming it and exits 2. The same directory given twice is used once. If omitted, only chezmoi's default source directory (`~/.local/share/chezmoi`) is auto-detected. |
 | `--layout <auto\|stow\|chezmoi>` | Repository layout, applied to every `--dotfiles` directory. `auto` (default) decides for each directory on its own: chezmoi if it contains `.chezmoiroot`, `.chezmoiignore`, or names starting with `dot_`, otherwise stow. |
 | `--root <PATH>` | Extra root directory to scan, repeatable. See "Limits" for roots that overlap. |
+| `--watch <PATH>` | Force a secret scan of a file or directory the normal walk skips, repeatable. See "Forcing a scan with `--watch`". |
 | `--all` | Show everything, including tracked items and known state and cache items. |
 | `--json` | Emit JSON instead of the human report. |
 | `--no-color` | Disable colored output. |
@@ -120,6 +121,12 @@ The dialect is deliberately small:
 - Symlinks are listed but never followed, including symlinks pointing out of the scanned roots. Files are opened without following symlinks and without blocking on FIFOs, and anything that is not a regular file is not read. This includes `.gitignore`, `.dredgeignore` and `.chezmoiroot`.
 - Bounded reads: files over 1 MiB and binary files (containing NUL bytes) are not scanned, and the walk depth is capped.
 - All secret patterns use the linear-time `regex` crate engine (no lookaround, no backtracking).
+
+## Forcing a scan with `--watch`
+
+`--watch <PATH>` force-scans a path for secrets that the normal walk would not reach: cache and state directories are never entered, the walk stops at depth 6, and so on. A watched directory is walked without cache or state pruning, with depth counted from the watched path (the same cap of 6, and deeper directories are still counted as not scanned). A watched file is scanned directly. Findings join the unit that holds the path, with no duplicate when the normal scan already scanned the file, and count like any other untracked secret (same JSON, same exit codes). The IGNORED summary gains one line, `N paths force-scanned with --watch`, only when N is above zero.
+
+What it does not bypass: symlinks are never followed (a watched symlink is skipped with a note, and links inside a watched directory are not read), files over 1 MiB are still not scanned, and anything that is not a regular file or directory is skipped. A path must exist and sit under your home directory or a `--root`; otherwise dredge prints one `dredge: note:` line on stderr and carries on, without changing the exit code. A path inside a `--dotfiles` directory is also skipped with a note.
 
 ## What v1 does not do
 

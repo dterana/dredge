@@ -91,6 +91,8 @@ pub struct Report {
     /// Config or unknown files over the scan size cap, not scanned for secrets.
     pub skipped_too_large: usize,
     pub committed_findings: Vec<Finding>,
+    /// `--watch` paths that were force-scanned.
+    pub watched_scanned: usize,
     /// Home-relative paths present in the repo but missing from home.
     pub missing_on_machine: Vec<PathBuf>,
     /// One-line notices for stderr (for example a skipped `--root`). Not part

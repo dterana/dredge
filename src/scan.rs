@@ -1,9 +1,9 @@
 //! Orchestration: resolve inputs, walk, classify, track, secret-scan, and
 //! assemble the report. Read-only throughout.
 
-use std::collections::{HashMap, HashSet};
+use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::fs;
-use std::io::Read;
+use std::io::{ErrorKind, Read};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
@@ -210,6 +210,23 @@ fn run_inner(args: &ScanArgs, progress: &mut Progress) -> Result<Report> {
         cache_state_count += count;
         units.push(unit);
     }
+    let normal_files: HashSet<&Path> = work
+        .iter()
+        .flat_map(|(uf, _)| uf.files.iter().map(PathBuf::as_path))
+        .collect();
+    let watch = watch_pass(
+        &ctx,
+        args,
+        &roots,
+        &excluded,
+        &normal_files,
+        &mut units,
+        &ignore,
+    );
+    cache_state_count += watch.cache_state;
+    skipped_too_large += watch.too_large;
+    unreadable.extend(watch.unreadable);
+    notes.extend(watch.notes);
     units.sort_by(|a, b| a.path.cmp(&b.path));
 
     // A file reachable from two listed dirs (one inside the other) is
@@ -242,10 +259,11 @@ fn run_inner(args: &ScanArgs, progress: &mut Progress) -> Result<Report> {
         unreadable,
         ignored_by_file: 0,
         cache_state_count,
-        depth_truncated: walked.depth_truncated,
+        depth_truncated: walked.depth_truncated + watch.depth_truncated,
         pruned_dirs: walked.pruned_dirs,
         skipped_too_large,
         committed_findings,
+        watched_scanned: watch.scanned,
         missing_on_machine,
         notes,
     };
@@ -424,6 +442,7 @@ fn scan_unit(
             ctx,
             &uf.path,
             f,
+            false,
             &mut unreadable,
             &mut too_large,
         ));
@@ -439,6 +458,161 @@ fn scan_unit(
         unreadable,
         too_large,
     }
+}
+
+#[derive(Default)]
+struct WatchOutcome {
+    /// `--watch` paths that passed every check and were scanned.
+    scanned: usize,
+    depth_truncated: usize,
+    too_large: usize,
+    cache_state: usize,
+    unreadable: Vec<PathBuf>,
+    notes: Vec<String>,
+}
+
+/// Force-scans the `--watch` paths. Each path is lstat'd first and never
+/// followed if it is a symlink; it must be a regular file or a directory
+/// under home or a `--root`. A directory is walked without cache or state
+/// pruning, with depth counted from itself, and nothing inside is followed.
+/// Every open still goes through `open_regular` and the scan size cap.
+/// Findings join the unit that holds the file (a unit is created, as the
+/// walker would, when none does). A file the normal scan already scanned
+/// adds nothing, so no finding is ever duplicated.
+fn watch_pass(
+    ctx: &Ctx,
+    args: &ScanArgs,
+    roots: &[Root],
+    excluded: &[PathBuf],
+    normal: &HashSet<&Path>,
+    units: &mut Vec<Unit>,
+    ignore: &IgnoreList,
+) -> WatchOutcome {
+    let mut out = WatchOutcome::default();
+    let canon = |p: &Path| fs::canonicalize(p).unwrap_or_else(|_| p.to_path_buf());
+    let allowed: Vec<PathBuf> = std::iter::once(ctx.home.to_path_buf())
+        .chain(args.root.iter().map(|r| canon(r)))
+        .collect();
+    let mut targets: BTreeSet<PathBuf> = BTreeSet::new();
+    for w in &args.watch {
+        let shown = display_lossy(w);
+        let ft = match fs::symlink_metadata(w) {
+            Ok(m) => m.file_type(),
+            Err(e) if e.kind() == ErrorKind::NotFound => {
+                out.notes.push(format!("--watch {shown} does not exist"));
+                continue;
+            }
+            Err(_) => {
+                out.notes.push(format!("--watch {shown} cannot be read"));
+                continue;
+            }
+        };
+        if ft.is_symlink() {
+            out.notes
+                .push(format!("--watch {shown} is a symlink, not followed"));
+            continue;
+        }
+        if !ft.is_file() && !ft.is_dir() {
+            out.notes.push(format!(
+                "--watch {shown} is not a regular file or directory"
+            ));
+            continue;
+        }
+        let real = canon(w);
+        if !allowed.iter().any(|a| real.starts_with(a)) {
+            out.notes.push(format!(
+                "--watch {shown} is outside the home directory and every --root"
+            ));
+            continue;
+        }
+        if excluded.iter().any(|d| real.starts_with(d)) {
+            out.notes.push(format!(
+                "--watch {shown} is inside a dotfiles directory, which is scanned only for committed secrets"
+            ));
+            continue;
+        }
+        // The same path given twice counts once.
+        if targets.insert(real) {
+            out.scanned += 1;
+        }
+    }
+
+    // Every file to scan, grouped by its unit, in path order.
+    let bases: Vec<PathBuf> = roots.iter().map(|r| canon(&r.path)).collect();
+    let by_path: HashMap<PathBuf, usize> = units
+        .iter()
+        .enumerate()
+        .map(|(i, u)| (u.path.clone(), i))
+        .collect();
+    let mut groups: BTreeMap<PathBuf, BTreeSet<PathBuf>> = BTreeMap::new();
+    let mut add = |file: PathBuf| {
+        if excluded.iter().any(|d| file.starts_with(d)) {
+            return;
+        }
+        let unit = file
+            .ancestors()
+            .find(|a| by_path.contains_key(*a))
+            .map(Path::to_path_buf)
+            .or_else(|| {
+                // No unit holds it: the unit the walker would make, the
+                // first component under the deepest root.
+                let base = bases
+                    .iter()
+                    .filter(|b| file.starts_with(b))
+                    .max_by_key(|b| b.components().count())?;
+                let first = file.strip_prefix(base).ok()?.components().next()?;
+                Some(base.join(first))
+            });
+        if let Some(unit) = unit {
+            groups.entry(unit).or_default().insert(file);
+        }
+    };
+    for t in &targets {
+        match fs::symlink_metadata(t) {
+            Ok(m) if m.file_type().is_dir() => {
+                let w = walk::watch_dir(t);
+                out.depth_truncated += w.depth_truncated;
+                out.unreadable.extend(w.unreadable);
+                for uf in w.units {
+                    uf.files.into_iter().for_each(&mut add);
+                }
+            }
+            Ok(_) => add(t.clone()),
+            Err(_) => out.unreadable.push(t.clone()),
+        }
+    }
+
+    for (unit, files) in groups {
+        let mut entries = Vec::new();
+        let mut found: Vec<Finding> = Vec::new();
+        for f in files {
+            let mut too_large = 0;
+            let entry = file_entry(ctx, &unit, &f, true, &mut out.unreadable, &mut too_large);
+            let scanned_before = normal.contains(f.as_path())
+                && entry.tracking.is_some()
+                && !in_preferences(ctx, &f);
+            if scanned_before {
+                continue;
+            }
+            out.too_large += too_large;
+            found.extend(entry.findings.iter().cloned());
+            entries.push(entry);
+        }
+        match by_path.get(&unit).and_then(|i| units.get_mut(*i)) {
+            Some(u) => {
+                u.findings.extend(found);
+                u.findings
+                    .sort_by(|a, b| (&a.path, a.line).cmp(&(&b.path, b.line)));
+            }
+            None if !entries.is_empty() => {
+                let (u, count) = assemble(ctx, unit, false, entries, ignore);
+                out.cache_state += count;
+                units.push(u);
+            }
+            None => {}
+        }
+    }
+    out
 }
 
 /// The stderr note for an extra root that was not walked.
@@ -552,6 +726,7 @@ fn file_entry(
     ctx: &Ctx,
     unit: &Path,
     path: &Path,
+    force: bool,
     unreadable: &mut Vec<PathBuf>,
     too_large: &mut usize,
 ) -> Entry {
@@ -564,21 +739,22 @@ fn file_entry(
         drift: None,
         findings: Vec::new(),
     };
-    if !tracks(kind) {
+    if !tracks(kind) && !force {
         return entry;
     }
-    let tracking = decide(ctx, path, &rel);
-    if tracking == Tracking::TrackedDrifted {
-        if let Some(repo) = track::lookup_first(ctx.sources, &rel) {
-            entry.drift = Some(Drift {
-                path: path.to_path_buf(),
-                repo_path: repo.repo_path,
-            });
+    if tracks(kind) {
+        let tracking = decide(ctx, path, &rel);
+        if tracking == Tracking::TrackedDrifted {
+            if let Some(repo) = track::lookup_first(ctx.sources, &rel) {
+                entry.drift = Some(Drift {
+                    path: path.to_path_buf(),
+                    repo_path: repo.repo_path,
+                });
+            }
         }
+        entry.tracking = Some(tracking);
     }
-    entry.tracking = Some(tracking);
-    let in_preferences = path.starts_with(ctx.home) && rel.starts_with(PREFERENCES);
-    if !in_preferences {
+    if force || !in_preferences(ctx, path) {
         match scan_file_detailed(path, &ctx.secrets) {
             Ok(outcome) => {
                 if outcome.skipped == Some(SkipReason::TooLarge) {
@@ -590,6 +766,11 @@ fn file_entry(
         }
     }
     entry
+}
+
+/// Plists under `~/Library/Preferences` are listed by name only.
+fn in_preferences(ctx: &Ctx, path: &Path) -> bool {
+    path.starts_with(ctx.home) && home_rel(ctx.home, path).starts_with(PREFERENCES)
 }
 
 /// A symlink is never read or followed; it is tracked only if it resolves
