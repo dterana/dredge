@@ -1,19 +1,19 @@
 [[rule]]
 app = "zsh"
 kind = "config"
-globs = [".zshrc", ".zshenv", ".zprofile", ".zlogin", ".zlogout", ".zsh/**"]
+globs = [".zshrc", ".zshenv", ".zprofile", ".zlogin", ".zlogout", ".zsh/**", ".zfunc/**", ".config/zsh/**"]
 description = "Zsh shell configuration"
 
 [[rule]]
 app = "zsh"
 kind = "state"
-globs = [".zsh_history", ".zsh_sessions/**", ".zcompdump*"]
+globs = [".zsh_history", ".zsh_sessions/**", ".zcompdump*", ".zcompcache/**"]
 description = "Zsh history and session state"
 
 [[rule]]
 app = "bash"
 kind = "config"
-globs = [".bashrc", ".bash_profile", ".bash_login", ".bash_logout"]
+globs = [".bashrc", ".bash_profile", ".bash_login", ".bash_logout", ".profile"]
 description = "Bash shell configuration"
 
 [[rule]]
@@ -111,6 +111,114 @@ app = "vscode"
 kind = "state"
 globs = [".vscode/extensions/**"]
 description = "Visual Studio Code installed extensions"
+
+[[rule]]
+app = "vscode"
+kind = "config"
+globs = ["Library/Application Support/Code/User/profiles/*/settings.json", "Library/Application Support/Code/User/profiles/*/keybindings.json", "Library/Application Support/Code/User/profiles/*/snippets/**"]
+description = "Visual Studio Code profile settings, keybindings and snippets"
+
+[[rule]]
+app = "vscode"
+kind = "state"
+globs = ["Library/Application Support/Code/User/profiles/*/globalStorage/**"]
+description = "Visual Studio Code profile extension state"
+
+[[rule]]
+app = "vscode-insiders"
+kind = "config"
+globs = ["Library/Application Support/Code - Insiders/User/settings.json", "Library/Application Support/Code - Insiders/User/keybindings.json", "Library/Application Support/Code - Insiders/User/snippets/**", "Library/Application Support/Code - Insiders/User/profiles/*/settings.json", "Library/Application Support/Code - Insiders/User/profiles/*/keybindings.json", "Library/Application Support/Code - Insiders/User/profiles/*/snippets/**"]
+description = "Visual Studio Code Insiders user settings, keybindings and snippets"
+
+[[rule]]
+app = "vscode-insiders"
+kind = "cache"
+globs = ["Library/Application Support/Code - Insiders/Cache/**", "Library/Application Support/Code - Insiders/CachedData/**", "Library/Application Support/Code - Insiders/Crashpad/**", "Library/Application Support/Code - Insiders/GPUCache/**", "Library/Application Support/Code - Insiders/Service Worker/**"]
+description = "Visual Studio Code Insiders caches"
+
+[[rule]]
+app = "vscode-insiders"
+kind = "state"
+globs = ["Library/Application Support/Code - Insiders/logs/**", "Library/Application Support/Code - Insiders/User/workspaceStorage/**", "Library/Application Support/Code - Insiders/User/globalStorage/**", "Library/Application Support/Code - Insiders/User/History/**", "Library/Application Support/Code - Insiders/User/profiles/*/globalStorage/**"]
+description = "Visual Studio Code Insiders logs, per-workspace and global extension state, and local file history snapshots"
+
+[[rule]]
+app = "vscode-insiders"
+kind = "state"
+globs = [".vscode-insiders/extensions/**"]
+description = "Visual Studio Code Insiders installed extensions"
+
+[[rule]]
+app = "vscodium"
+kind = "config"
+globs = ["Library/Application Support/VSCodium/User/settings.json", "Library/Application Support/VSCodium/User/keybindings.json", "Library/Application Support/VSCodium/User/snippets/**", "Library/Application Support/VSCodium/User/profiles/*/settings.json", "Library/Application Support/VSCodium/User/profiles/*/keybindings.json", "Library/Application Support/VSCodium/User/profiles/*/snippets/**"]
+description = "VSCodium user settings, keybindings and snippets"
+
+[[rule]]
+app = "vscodium"
+kind = "cache"
+globs = ["Library/Application Support/VSCodium/Cache/**", "Library/Application Support/VSCodium/CachedData/**", "Library/Application Support/VSCodium/Crashpad/**", "Library/Application Support/VSCodium/GPUCache/**", "Library/Application Support/VSCodium/Service Worker/**"]
+description = "VSCodium caches"
+
+[[rule]]
+app = "vscodium"
+kind = "state"
+globs = ["Library/Application Support/VSCodium/logs/**", "Library/Application Support/VSCodium/User/workspaceStorage/**", "Library/Application Support/VSCodium/User/globalStorage/**", "Library/Application Support/VSCodium/User/History/**", "Library/Application Support/VSCodium/User/profiles/*/globalStorage/**"]
+description = "VSCodium logs, per-workspace and global extension state, and local file history snapshots"
+
+[[rule]]
+app = "vscodium"
+kind = "state"
+globs = [".vscode-oss/extensions/**"]
+description = "VSCodium installed extensions"
+
+[[rule]]
+app = "cursor"
+kind = "config"
+globs = ["Library/Application Support/Cursor/User/settings.json", "Library/Application Support/Cursor/User/keybindings.json", "Library/Application Support/Cursor/User/snippets/**", "Library/Application Support/Cursor/User/profiles/*/settings.json", "Library/Application Support/Cursor/User/profiles/*/keybindings.json", "Library/Application Support/Cursor/User/profiles/*/snippets/**"]
+description = "Cursor user settings, keybindings and snippets"
+
+[[rule]]
+app = "cursor"
+kind = "cache"
+globs = ["Library/Application Support/Cursor/Cache/**", "Library/Application Support/Cursor/CachedData/**", "Library/Application Support/Cursor/Crashpad/**", "Library/Application Support/Cursor/GPUCache/**", "Library/Application Support/Cursor/Service Worker/**"]
+description = "Cursor caches"
+
+[[rule]]
+app = "cursor"
+kind = "state"
+globs = ["Library/Application Support/Cursor/logs/**", "Library/Application Support/Cursor/User/workspaceStorage/**", "Library/Application Support/Cursor/User/globalStorage/**", "Library/Application Support/Cursor/User/History/**", "Library/Application Support/Cursor/User/profiles/*/globalStorage/**"]
+description = "Cursor logs, per-workspace and global extension state, and local file history snapshots"
+
+[[rule]]
+app = "cursor"
+kind = "state"
+globs = [".cursor/extensions/**"]
+description = "Cursor installed extensions"
+
+[[rule]]
+app = "windsurf"
+kind = "config"
+globs = ["Library/Application Support/Windsurf/User/settings.json", "Library/Application Support/Windsurf/User/keybindings.json", "Library/Application Support/Windsurf/User/snippets/**", "Library/Application Support/Windsurf/User/profiles/*/settings.json", "Library/Application Support/Windsurf/User/profiles/*/keybindings.json", "Library/Application Support/Windsurf/User/profiles/*/snippets/**"]
+description = "Windsurf user settings, keybindings and snippets"
+
+[[rule]]
+app = "windsurf"
+kind = "cache"
+globs = ["Library/Application Support/Windsurf/Cache/**", "Library/Application Support/Windsurf/CachedData/**", "Library/Application Support/Windsurf/Crashpad/**", "Library/Application Support/Windsurf/GPUCache/**", "Library/Application Support/Windsurf/Service Worker/**"]
+description = "Windsurf caches"
+
+[[rule]]
+app = "windsurf"
+kind = "state"
+globs = ["Library/Application Support/Windsurf/logs/**", "Library/Application Support/Windsurf/User/workspaceStorage/**", "Library/Application Support/Windsurf/User/globalStorage/**", "Library/Application Support/Windsurf/User/History/**", "Library/Application Support/Windsurf/User/profiles/*/globalStorage/**"]
+description = "Windsurf logs, per-workspace and global extension state, and local file history snapshots"
+
+[[rule]]
+app = "windsurf"
+kind = "state"
+globs = [".windsurf/extensions/**"]
+description = "Windsurf installed extensions"
 
 [[rule]]
 app = "zed"
@@ -501,6 +609,60 @@ app = "herdr"
 kind = "config"
 globs = [".config/herdr/**"]
 description = "herdr configuration"
+
+[[rule]]
+app = "aerospace"
+kind = "config"
+globs = [".config/aerospace/**"]
+description = "AeroSpace window manager configuration"
+
+[[rule]]
+app = "karabiner"
+kind = "config"
+globs = [".config/karabiner/**"]
+description = "Karabiner-Elements configuration"
+
+[[rule]]
+app = "yazi"
+kind = "config"
+globs = [".config/yazi/**"]
+description = "Yazi file manager configuration"
+
+[[rule]]
+app = "sheldon"
+kind = "config"
+globs = [".config/sheldon/**"]
+description = "Sheldon plugin manager configuration"
+
+[[rule]]
+app = "fastfetch"
+kind = "config"
+globs = [".config/fastfetch/**"]
+description = "Fastfetch configuration"
+
+[[rule]]
+app = "uv"
+kind = "config"
+globs = [".config/uv/**"]
+description = "uv configuration"
+
+[[rule]]
+app = "k9s"
+kind = "config"
+globs = ["Library/Application Support/k9s/config.yaml", "Library/Application Support/k9s/aliases.yaml", "Library/Application Support/k9s/hotkeys.yaml", "Library/Application Support/k9s/plugins.yaml", "Library/Application Support/k9s/skins/**"]
+description = "k9s configuration, aliases, hotkeys, plugins and skins"
+
+[[rule]]
+app = "lazydocker"
+kind = "config"
+globs = ["Library/Application Support/lazydocker/config.yml"]
+description = "lazydocker configuration"
+
+[[rule]]
+app = "node"
+kind = "state"
+globs = [".node_repl_history"]
+description = "Node.js REPL history"
 
 [[rule]]
 app = "macos"

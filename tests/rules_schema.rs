@@ -432,3 +432,102 @@ fn vscode_history_storage_and_extensions_are_state() {
     assert!(!prunes_dir(Path::new(".vscode"), &rules));
     assert_eq!(class(".vscode/argv.json").1, Kind::Unknown);
 }
+
+#[test]
+fn vscode_variants_and_profiles_are_classified_like_vscode() {
+    use dredge::classify::prunes_dir;
+    let rules = Rules::embedded();
+    for (app, dir, home) in [
+        ("vscode-insiders", "Code - Insiders", ".vscode-insiders"),
+        ("vscodium", "VSCodium", ".vscode-oss"),
+        ("cursor", "Cursor", ".cursor"),
+        ("windsurf", "Windsurf", ".windsurf"),
+    ] {
+        let base = format!("Library/Application Support/{dir}");
+        let config = (Some(app.to_string()), Kind::Config);
+        let state = (Some(app.to_string()), Kind::State);
+        assert_eq!(
+            class(&format!("{base}/User/settings.json")),
+            config,
+            "{app}"
+        );
+        assert_eq!(
+            class(&format!("{base}/User/snippets/rust.json")),
+            config,
+            "{app}"
+        );
+        assert_eq!(
+            class(&format!("{base}/User/History/a/b.json")),
+            state,
+            "{app}"
+        );
+        assert_eq!(
+            class(&format!("{base}/User/workspaceStorage/x/y")),
+            state,
+            "{app}"
+        );
+        assert_eq!(
+            class(&format!("{home}/extensions/ext/package.json")),
+            state,
+            "{app}"
+        );
+        assert_eq!(
+            class(&format!("{base}/Cache/x")),
+            (Some(app.to_string()), Kind::Cache),
+            "{app}"
+        );
+        assert!(
+            prunes_dir(Path::new(&format!("{home}/extensions")), &rules),
+            "{app}"
+        );
+        assert!(
+            prunes_dir(Path::new(&format!("{base}/User/globalStorage")), &rules),
+            "{app}"
+        );
+    }
+    // A profile's own settings are config; its extension state is not.
+    let code = "Library/Application Support/Code/User/profiles/ab12cd34";
+    assert_eq!(
+        class(&format!("{code}/settings.json")),
+        (Some("vscode".to_string()), Kind::Config)
+    );
+    assert_eq!(
+        class(&format!("{code}/globalStorage/x/y.json")),
+        (Some("vscode".to_string()), Kind::State)
+    );
+    let cursor = "Library/Application Support/Cursor/User/profiles/ab12cd34";
+    assert_eq!(
+        class(&format!("{cursor}/keybindings.json")),
+        (Some("cursor".to_string()), Kind::Config)
+    );
+}
+
+#[test]
+fn newly_classified_apps_are_config_and_the_rest_of_their_folders_are_not() {
+    let config = |app: &str| (Some(app.to_string()), Kind::Config);
+    for (p, app) in [
+        (".config/aerospace/aerospace.toml", "aerospace"),
+        (".config/karabiner/karabiner.json", "karabiner"),
+        (".config/yazi/yazi.toml", "yazi"),
+        (".config/sheldon/plugins.toml", "sheldon"),
+        (".config/fastfetch/config.jsonc", "fastfetch"),
+        (".config/uv/uv.toml", "uv"),
+        (".config/zsh/.zshrc", "zsh"),
+        (".zfunc/_mytool", "zsh"),
+        (".profile", "bash"),
+        ("Library/Application Support/k9s/config.yaml", "k9s"),
+        (
+            "Library/Application Support/lazydocker/config.yml",
+            "lazydocker",
+        ),
+    ] {
+        assert_eq!(class(p), config(app), "{p}");
+    }
+    assert_eq!(class(".zcompcache/x").1, Kind::State);
+    assert_eq!(class(".node_repl_history").1, Kind::State);
+    // k9s keeps per-cluster state next to its config; that stays unknown.
+    assert_eq!(
+        class("Library/Application Support/k9s/clusters/a/b.yaml").1,
+        Kind::Unknown
+    );
+}

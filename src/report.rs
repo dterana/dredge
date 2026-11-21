@@ -11,7 +11,7 @@
 use std::collections::hash_map::Entry;
 use std::collections::HashMap;
 use std::fmt::Write as _;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 use owo_colors::OwoColorize;
 use serde_json::{json, Value};
@@ -59,10 +59,32 @@ pub fn display_path(report: &Report, p: &Path) -> String {
 /// Home-relative folder whose unknown units the human report collapses.
 const APP_SUPPORT: &str = "Library/Application Support";
 
-/// True for a path strictly inside `~/Library/Application Support`.
-fn in_app_support(report: &Report, p: &Path) -> bool {
+/// Home-relative folder of preference files, collapsed the same way.
+const PREFERENCES: &str = "Library/Preferences";
+
+/// Folders whose unknown units collapse into one line each, with the noun
+/// for one and for several.
+const COLLAPSED_ROOTS: [(&str, &str, &str); 2] = [
+    (APP_SUPPORT, "app", "apps"),
+    (PREFERENCES, "preference file", "preference files"),
+];
+
+/// Home-relative folder holding the macOS privacy-protected folders that
+/// the human report summarizes under COULD NOT READ.
+const LIBRARY: &str = "Library";
+
+/// The index in `COLLAPSED_ROOTS` of the folder a path is strictly inside.
+fn collapsed_root(report: &Report, p: &Path) -> Option<usize> {
+    let rel = p.strip_prefix(&report.home).ok()?;
+    COLLAPSED_ROOTS
+        .iter()
+        .position(|(root, _, _)| rel.starts_with(root) && rel != Path::new(root))
+}
+
+/// True for a path strictly inside `~/Library`.
+fn in_library(report: &Report, p: &Path) -> bool {
     p.strip_prefix(&report.home)
-        .is_ok_and(|rel| rel.starts_with(APP_SUPPORT) && rel != Path::new(APP_SUPPORT))
+        .is_ok_and(|rel| rel.starts_with(LIBRARY) && rel != Path::new(LIBRARY))
 }
 
 fn lossy(p: &Path) -> String {
@@ -306,19 +328,23 @@ pub fn render_human(report: &Report, color: bool, all: bool) -> String {
         out.section(&h("TRACKED", false), &lines);
     }
 
-    // UNKNOWN. Without `--all`, unknown app folders under Application
-    // Support that carry no finding are counted on one line instead of
-    // listed; a unit with a finding is always listed.
+    // UNKNOWN. Without `--all`, unknown units under Application Support and
+    // Preferences that carry no finding are counted on one line per folder
+    // instead of listed; a unit with a finding is always listed.
     let mut unknown: Vec<&Unit> = report
         .units
         .iter()
         .filter(|u| u.kind == Kind::Unknown && is_untracked(u.tracking) && !u.ignored)
         .collect();
-    let mut collapsed_apps = 0;
+    let mut collapsed = [0usize; COLLAPSED_ROOTS.len()];
     if !all {
-        let before = unknown.len();
-        unknown.retain(|u| !(in_app_support(report, &u.path) && u.findings.is_empty()));
-        collapsed_apps = before - unknown.len();
+        unknown.retain(|u| match collapsed_root(report, &u.path) {
+            Some(i) if u.findings.is_empty() => {
+                collapsed[i] += 1;
+                false
+            }
+            _ => true,
+        });
     }
     // Most useful rows first so they survive the cap: findings, then
     // partially tracked, then the rest. Stable, so ties keep path order.
@@ -348,21 +374,44 @@ pub fn render_human(report: &Report, color: bool, all: bool) -> String {
             unit_line(report, &p, u, &tags)
         })
         .collect();
-    if collapsed_apps > 0 {
-        let noun = if collapsed_apps == 1 { "app" } else { "apps" };
-        lines.push(format!(
-            "  (+ {} unclassified {noun} under ~/{APP_SUPPORT}, run with --all to list)",
-            thousands(collapsed_apps)
-        ));
+    for (&n, (root, one, many)) in collapsed.iter().zip(COLLAPSED_ROOTS) {
+        if n > 0 {
+            let noun = if n == 1 { one } else { many };
+            lines.push(format!(
+                "  (+ {} unclassified {noun} under ~/{root}, run with --all to list)",
+                thousands(n)
+            ));
+        }
     }
     out.section(&h(&header, false), &lines);
 
-    // COULD NOT READ
-    let lines: Vec<String> = report
-        .unreadable
+    // COULD NOT READ. Without `--all`, the folders under ~/Library are one
+    // line: macOS privacy protection blocks many of them (Mail, Messages,
+    // Safari, Contacts) until the terminal has Full Disk Access.
+    let (library, rest): (Vec<&PathBuf>, Vec<&PathBuf>) = if all {
+        (Vec::new(), report.unreadable.iter().collect())
+    } else {
+        report
+            .unreadable
+            .iter()
+            .partition(|u| in_library(report, u))
+    };
+    let mut lines: Vec<String> = rest
         .iter()
         .map(|u| format!("  {}", display_path(report, u)))
         .collect();
+    if !library.is_empty() {
+        let noun = if library.len() == 1 {
+            "folder"
+        } else {
+            "folders"
+        };
+        lines.push(format!(
+            "  ({} {noun} under ~/{LIBRARY}, probably protected by macOS: give your terminal Full Disk Access to scan {}, or run with --all to list)",
+            thousands(library.len()),
+            if library.len() == 1 { "it" } else { "them" }
+        ));
+    }
     out.section(&h("COULD NOT READ", false), &lines);
 
     // IGNORED summary
