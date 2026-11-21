@@ -879,6 +879,12 @@ const GIT_ROOT_MAX_UP: usize = 64;
 /// Largest `.gitignore` that is read.
 const MAX_GITIGNORE_BYTES: u64 = 1024 * 1024;
 
+/// Most lines of a `.gitignore` that are compiled; the rest are ignored.
+const MAX_GITIGNORE_LINES: usize = 10_000;
+
+/// Longest `.gitignore` line that is compiled.
+const MAX_GITIGNORE_LINE_BYTES: usize = 1024;
+
 /// The git work tree enclosing `dir`: the nearest of `dir` and its ancestors
 /// (at most `GIT_ROOT_MAX_UP` levels up) holding a `.git` directory or file
 /// (worktrees and submodules use a file). Checked with lstat only, so a
@@ -913,8 +919,13 @@ fn read_gitignore(base: &Path) -> Option<Gitignore> {
     let text = String::from_utf8_lossy(&buf);
     let text = text.strip_prefix('\u{feff}').unwrap_or(&text);
     let mut builder = GitignoreBuilder::new(base);
-    for line in text.lines() {
-        // A line that is not a valid pattern is skipped, as git does.
+    for line in text.lines().take(MAX_GITIGNORE_LINES) {
+        // A line that is not a valid pattern is skipped, as git does. So is a
+        // line too long to be a real pattern: fewer patterns means more
+        // files scanned, never fewer.
+        if line.len() > MAX_GITIGNORE_LINE_BYTES {
+            continue;
+        }
         let _ = builder.add_line(Some(path.clone()), line);
     }
     builder.build().ok().filter(|g| !g.is_empty())
@@ -1272,6 +1283,44 @@ mod tests {
         // A fresh cache reads the disk again.
         let fresh = GitIgnores::new(&root.join("b"), GitignoreCache::default());
         assert!(!fresh.ignored(&root.join("b/y.env"), false));
+    }
+
+    #[test]
+    fn gitignore_lines_past_the_caps_are_not_compiled() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = fs::canonicalize(tmp.path()).unwrap();
+        let mut text = String::new();
+        text.push_str(&format!("{}\n", "a".repeat(MAX_GITIGNORE_LINE_BYTES + 1)));
+        text.push_str("kept.env\n");
+        for _ in 0..MAX_GITIGNORE_LINES {
+            text.push_str("filler\n");
+        }
+        text.push_str("late.env\n");
+        fs::write(root.join(".gitignore"), text).unwrap();
+        let gi = read_gitignore(&root).unwrap();
+        assert!(gi.matched(root.join("kept.env"), false).is_ignore());
+        assert!(!gi.matched(root.join("late.env"), false).is_ignore());
+        assert!(!gi
+            .matched(root.join("a".repeat(MAX_GITIGNORE_LINE_BYTES + 1)), false)
+            .is_ignore());
+    }
+
+    #[test]
+    fn a_crafted_gitignore_is_cheap_to_load_and_match() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = fs::canonicalize(tmp.path()).unwrap();
+        let line = format!("{}x\n", "a*".repeat(30));
+        let text = line.repeat(MAX_GITIGNORE_BYTES as usize / line.len());
+        fs::write(root.join(".gitignore"), text).unwrap();
+        let start = std::time::Instant::now();
+        // Either it compiles or it is dropped whole (nothing ignored, so
+        // more is scanned); both must be quick.
+        if let Some(gi) = read_gitignore(&root) {
+            for i in 0..2_000 {
+                let _ = gi.matched(root.join(format!("dir/file{i}.txt")), false);
+            }
+        }
+        assert!(start.elapsed() < std::time::Duration::from_secs(10));
     }
 
     #[test]
