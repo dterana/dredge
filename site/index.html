@@ -1,0 +1,173 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Dredge: find what your dotfiles don't know about</title>
+<meta name="description" content="Dredge is a read-only command line tool that scans your home directory, compares it with your stow or chezmoi repo, and reports untracked config, drift and secrets. It never prints a secret value.">
+<meta property="og:title" content="Dredge">
+<meta property="og:description" content="Find what is on your Mac that your dotfiles don't know about, and which of it is dangerous to commit.">
+<meta property="og:type" content="website">
+<meta name="theme-color" content="#DCE9E4">
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='7' fill='%2310282E'/%3E%3Cpath d='M5 13c4-3 7 3 11 0s7 3 11 0' stroke='%238FB8B0' stroke-width='2.4' fill='none' stroke-linecap='round'/%3E%3Ccircle cx='16' cy='23' r='3.4' fill='%23F2B544'/%3E%3C/svg%3E">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Bricolage+Grotesque:opsz,wdth,wght@12..96,75..100,400..800&family=IBM+Plex+Mono:wght@400;500&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+<a class="skip" href="#main">Skip to content</a>
+
+<div class="gauge" aria-hidden="true">
+  <div class="gauge-line"><span class="gauge-dot"></span></div>
+  <div class="gauge-read"><span id="depth">0</span> m</div>
+</div>
+
+<header class="bar">
+  <a class="mark" href="#top" aria-label="Dredge, back to top">
+    <svg viewBox="0 0 32 32" width="26" height="26" aria-hidden="true"><path d="M3 12c4-3 8 3 13 0s9 3 13 0" stroke="currentColor" stroke-width="2.6" fill="none" stroke-linecap="round"/><circle cx="16" cy="23" r="3.6" fill="#F2B544"/></svg>
+    <span>dredge</span>
+  </a>
+  <nav aria-label="Primary">
+    <a href="#finds">What it finds</a>
+    <a href="#safe">Safety</a>
+    <a href="#use">Usage</a>
+    <a href="#install">Install</a>
+    <a class="gh" href="https://github.com/dterana/dredge">GitHub</a>
+  </nav>
+</header>
+
+<main id="main">
+
+<section class="hero" id="top">
+  <div class="hero-copy" data-speed="0.12">
+    <h1>What is on your Mac that your dotfiles don't know about?</h1>
+    <p class="lede">Dredge scans your home directory, compares it with your stow or chezmoi repo, and tells you which untracked files hold secrets. It only reads. It never prints a secret value.</p>
+    <div class="cta">
+      <a class="btn primary" href="#install">Install dredge</a>
+      <a class="btn" href="https://github.com/dterana/dredge">View on GitHub</a>
+    </div>
+  </div>
+
+  <figure class="term" data-speed="0.04" aria-label="Example output of dredge scan">
+    <figcaption>dredge scan --dotfiles ~/dotfiles</figcaption>
+    <pre id="term" aria-hidden="false"><code><span class="t-line">COMMITTED SECRETS</span><span class="t-line dim">  (none)</span><span class="t-line"> </span><span class="t-line">UNTRACKED SECRETS</span><span class="t-line found">  ssh    ~/.ssh/id_ed25519           SECRET  rule: private-key, line 1</span><span class="t-line found">  -      ~/.config/gh-old/hosts.yml  SECRET  rule: github-token, line 4</span><span class="t-line"> </span><span class="t-line">UNTRACKED CONFIG</span><span class="t-line">  fish   ~/.config/fish</span><span class="t-line">  git    ~/.config/git</span><span class="t-line">  zed    ~/.config/zed              partially tracked</span><span class="t-line"> </span><span class="t-line">TRACKED, DRIFTED</span><span class="t-line">  zsh    ~/.zshrc                   differs from the repo copy</span><span class="t-line"> </span><span class="t-line dim">UNKNOWN (449)  showing 20, run with --all to list</span><span class="t-line exit">exit 1</span></code></pre>
+  </figure>
+
+  <svg class="edge" viewBox="-400 0 2240 140" preserveAspectRatio="none" aria-hidden="true">
+    <path data-drift="-0.06" fill="#8FB8B0" d="M-400,70 L0,70 C200,10 420,120 700,60 C980,0 1200,110 1440,50 L1840,50 L1840,140 L-400,140Z"/>
+    <path data-drift="0.05" fill="#4E7C7C" d="M-400,95 L0,95 C260,45 470,130 740,85 C1010,40 1220,125 1440,80 L1840,80 L1840,140 L-400,140Z"/>
+    <path data-drift="-0.03" fill="#234147" d="M-400,120 L0,120 C300,85 520,140 780,115 C1040,90 1240,135 1440,110 L1840,110 L1840,140 L-400,140Z"/>
+  </svg>
+</section>
+
+<section class="layer silt" id="finds">
+  <div class="wrap">
+    <h2>One scan, four answers</h2>
+    <p class="intro">The report is built in layers, from the most dangerous at the top to the most routine at the bottom. Every row is a path, a rule name and a line number.</p>
+    <dl class="strata">
+      <div>
+        <dt>Committed secrets</dt>
+        <dd>Secrets already sitting in your dotfiles repo, found without git. Dredge reads your <code>.gitignore</code> files itself and skips what git would skip, so it does not cry wolf about files that were never committed.</dd>
+      </div>
+      <div>
+        <dt>Untracked secrets</dt>
+        <dd>Private keys, GitHub tokens, AWS access keys and ngrok tokens in files your repo does not manage. These are the ones you must not commit by accident.</dd>
+      </div>
+      <div>
+        <dt>Untracked config</dt>
+        <dd>Config for 58 known apps that your dotfiles repo has no copy of. Unknown folders are listed separately, with the risky ones first.</dd>
+      </div>
+      <div>
+        <dt>Tracked, drifted</dt>
+        <dd>Files your repo does manage whose content on this machine no longer matches the repo copy, compared by SHA-256.</dd>
+      </div>
+    </dl>
+  </div>
+  <svg class="edge" viewBox="-400 0 2240 120" preserveAspectRatio="none" aria-hidden="true">
+    <path data-drift="0.05" fill="#1A353B" d="M-400,60 L0,60 C240,110 480,10 720,50 C960,90 1200,20 1440,60 L1840,60 L1840,120 L-400,120Z"/>
+    <path data-drift="-0.04" fill="#10282E" d="M-400,90 L0,90 C260,60 520,115 780,85 C1040,55 1240,105 1440,80 L1840,80 L1840,120 L-400,120Z"/>
+  </svg>
+</section>
+
+<section class="layer deep" id="safe">
+  <div class="wrap">
+    <h2>Built so it cannot leak what it finds</h2>
+    <p class="intro">A tool that hunts for secrets is the last thing that should carry one. Dredge's guarantees are structural, not promises.</p>
+    <ul class="core">
+      <li><strong>No value field.</strong> A finding holds a rule name, a path and a line number. There is nowhere to put the secret, so it cannot reach the terminal, the JSON or a log.</li>
+      <li><strong>Read only.</strong> It never writes, moves or deletes anything in your home directory or your repo.</li>
+      <li><strong>Symlinks are never followed.</strong> Every file is checked with <code>lstat</code> and opened without following links, so a link cannot point it at something else.</li>
+      <li><strong>Pipes and devices are never opened.</strong> A FIFO or a device named <code>.gitignore</code> cannot hang the scan.</li>
+      <li><strong>Every read is bounded.</strong> Files over 1 MiB are not scanned for secrets, and the walk stops at depth 6.</li>
+    </ul>
+  </div>
+  <svg class="edge" viewBox="-400 0 2240 120" preserveAspectRatio="none" aria-hidden="true">
+    <path data-drift="-0.05" fill="#0D2227" d="M-400,70 L0,70 C220,20 460,110 720,65 C980,20 1220,100 1440,60 L1840,60 L1840,120 L-400,120Z"/>
+    <path data-drift="0.04" fill="#0B1D22" d="M-400,95 L0,95 C280,65 500,120 780,92 C1040,62 1240,112 1440,88 L1840,88 L1840,120 L-400,120Z"/>
+  </svg>
+</section>
+
+<section class="layer bed" id="use">
+  <div class="wrap two">
+    <div>
+      <h2>Works with the layout you already have</h2>
+      <p class="intro">Point it at one or more dotfiles directories. It detects stow or chezmoi on its own, and it works with neither.</p>
+      <ul class="plain">
+        <li>Repeat <code>--dotfiles</code> to track several stow directories at once. The first one listed wins when two define the same file.</li>
+        <li>List paths you chose not to track in a <code>.dredgeignore</code> file. Ignored paths leave the untracked list, but secrets and drift are always reported.</li>
+        <li>Add <code>--watch &lt;path&gt;</code> to force a secret scan of a path the normal walk skips, such as a folder inside an app's cache.</li>
+      </ul>
+    </div>
+    <div class="stack">
+      <pre class="code"><code><span class="c"># one stow repo</span>
+dredge scan --dotfiles ~/dotfiles
+
+<span class="c"># two stow repos, plus one extra folder</span>
+dredge scan \
+  --dotfiles ~/dotfiles-common \
+  --dotfiles ~/dotfiles-work \
+  --watch ~/.config/env
+
+<span class="c"># machine readable, for scripts</span>
+dredge scan --json</code></pre>
+      <pre class="code"><code><span class="c"># use it in CI or a pre-push hook</span>
+dredge scan --fail-on secrets,drift
+
+<span class="c"># exit 0  nothing to fix</span>
+<span class="c"># exit 1  a condition in --fail-on was met</span>
+<span class="c"># exit 2  dredge itself failed</span></code></pre>
+    </div>
+  </div>
+  <svg class="edge" viewBox="-400 0 2240 120" preserveAspectRatio="none" aria-hidden="true">
+    <path data-drift="0.04" fill="#091A1E" d="M-400,60 L0,60 C240,100 480,20 720,60 C960,100 1200,30 1440,70 L1840,70 L1840,120 L-400,120Z"/>
+    <path data-drift="-0.03" fill="#07161A" d="M-400,92 L0,92 C260,70 520,118 780,94 C1040,70 1240,110 1440,90 L1840,90 L1840,120 L-400,120Z"/>
+  </svg>
+</section>
+
+<section class="layer core-sample" id="install">
+  <div class="wrap">
+    <h2>Take a core sample of your machine</h2>
+    <p class="intro">Dredge is a single Rust binary. It is not on crates.io yet, so install it from the repository. You need Rust 1.88 or newer.</p>
+    <pre class="code big"><code>cargo install --git https://github.com/dterana/dredge
+dredge scan --dotfiles ~/dotfiles</code></pre>
+    <p class="fine">Your first run lists every untracked item. Copy the paths you do not want to track into a <code>.dredgeignore</code> file, and the next run shows only what is new.</p>
+    <div class="cta">
+      <a class="btn primary" href="https://github.com/dterana/dredge">View on GitHub</a>
+      <a class="btn" href="https://github.com/dterana/dredge#readme">Read the README</a>
+    </div>
+  </div>
+</section>
+
+</main>
+
+<footer class="foot">
+  <div class="wrap">
+    <span>Dredge is open source, licensed MIT or Apache-2.0.</span>
+    <a href="https://github.com/dterana/dredge">github.com/dterana/dredge</a>
+  </div>
+</footer>
+
+<script src="main.js" defer></script>
+</body>
+</html>
