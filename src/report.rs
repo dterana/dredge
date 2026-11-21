@@ -119,6 +119,16 @@ fn is_untracked(t: Tracking) -> bool {
     matches!(t, Tracking::Untracked | Tracking::PartiallyTracked)
 }
 
+fn unknown_rank(u: &Unit) -> u8 {
+    if !u.findings.is_empty() {
+        0
+    } else if u.tracking == Tracking::PartiallyTracked {
+        1
+    } else {
+        2
+    }
+}
+
 fn app_col(u: &Unit) -> String {
     format!("{:<APP_W$}", u.app.as_deref().unwrap_or("-"))
 }
@@ -310,6 +320,9 @@ pub fn render_human(report: &Report, color: bool, all: bool) -> String {
         unknown.retain(|u| !(in_app_support(report, &u.path) && u.findings.is_empty()));
         collapsed_apps = before - unknown.len();
     }
+    // Most useful rows first so they survive the cap: findings, then
+    // partially tracked, then the rest. Stable, so ties keep path order.
+    unknown.sort_by_key(|u| unknown_rank(u));
     let shown = if all {
         unknown.len()
     } else {
