@@ -208,6 +208,69 @@ fn unknown_capped_at_twenty_with_count() {
     assert!(all.contains("~/.config/unk24"), "{all}");
 }
 
+fn unknown_lines(out: &str) -> Vec<String> {
+    out.lines()
+        .skip_while(|l| !l.starts_with("UNKNOWN ("))
+        .skip(1)
+        .take_while(|l| l.starts_with("  "))
+        .map(str::to_string)
+        .collect()
+}
+
+/// A secret-bearing unit and a partially tracked unit sort after the cap
+/// boundary by path, yet come first in the human list.
+fn ordering_env() -> Env {
+    let e = Env::new();
+    for i in 0..25 {
+        e.h(&format!(".config/unk{i:02}/a.conf"), "x\n");
+    }
+    e.h(".config/zsecret/a.conf", &format!("token = {GH_VALUE}\n"));
+    e.d("pkg/.config/zpart/a.conf", "x\n");
+    e.h(".config/zpart/a.conf", "x\n");
+    e.h(".config/zpart/b.conf", "x\n");
+    e
+}
+
+#[test]
+fn unknown_list_puts_findings_then_partial_before_the_cap() {
+    let e = ordering_env();
+    let rep = e.run(&e.with_dots(&[]));
+    let out = render_human(&rep, false, false);
+    assert!(
+        out.contains("UNKNOWN (27)  showing 20, run with --all to list"),
+        "{out}"
+    );
+    let rows = unknown_lines(&out);
+    assert_eq!(rows.len(), 20, "{out}");
+    assert!(rows[0].contains("~/.config/zsecret"), "{out}");
+    assert!(rows[1].contains("~/.config/zpart"), "{out}");
+    assert!(rows[2].contains("~/.config/unk00"), "{out}");
+    assert!(rows[19].contains("~/.config/unk17"), "{out}");
+    assert!(!out.contains("~/.config/unk18"), "{out}");
+    // JSON keeps the path order.
+    let json = render_json(&rep);
+    let unk = json.find("unk00").unwrap();
+    assert!(unk < json.find("zpart").unwrap());
+    assert!(json.find("zpart").unwrap() < json.find("zsecret").unwrap());
+}
+
+#[test]
+fn unknown_ordering_end_to_end() {
+    let e = ordering_env();
+    let dots = e.dots();
+    let out = e
+        .bin()
+        .args(["--no-color", "--no-progress", "--dotfiles"])
+        .arg(&dots)
+        .output()
+        .unwrap();
+    let text = String::from_utf8_lossy(&out.stdout).into_owned();
+    let rows = unknown_lines(&text);
+    assert!(rows[0].contains("zsecret"), "{text}");
+    assert!(rows[1].contains("zpart"), "{text}");
+    assert_eq!(out.status.code(), Some(1));
+}
+
 fn missing_env(n: usize) -> Env {
     let e = Env::new();
     for i in 0..n {
