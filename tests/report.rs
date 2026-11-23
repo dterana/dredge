@@ -1786,3 +1786,143 @@ fn unreadable_library_folders_are_one_line_with_a_full_disk_access_hint() {
     // The JSON keeps every path.
     assert!(render_json(&rep).contains("AddressBook"));
 }
+
+// ---- .chezmoiignore, shared directory names, --hints ----
+
+#[test]
+fn chezmoiignore_patterns_leave_the_untracked_list() {
+    let e = Env::new();
+    e.d("dot_zshrc", "export A=1\n");
+    e.d(
+        ".chezmoiignore",
+        "# machine specific\n.config/foo\n/.config/bar/\n*.tmp\n!.config/keep\n{{ if eq .chezmoi.os \"linux\" }}\n.config/linuxonly\n{{ end }}\n",
+    );
+    for p in ["foo", "bar", "keep", "linuxonly"] {
+        e.h(&format!(".config/{p}/a.conf"), "k = 1\n");
+    }
+    // `*` does not cross `/`, so `*.tmp` reaches the home root, not .config.
+    e.h(".config/y.tmp", "k = 1\n");
+    e.h(".old.tmp", "k = 1\n");
+    let rep = e.run(&e.with_dots(&[]));
+    assert!(rep.chezmoi_ignore);
+    let names: Vec<String> = rep
+        .units
+        .iter()
+        .filter_map(|u| {
+            u.path
+                .strip_prefix(&rep.home)
+                .ok()
+                .map(|r| r.to_string_lossy().into_owned())
+        })
+        .collect();
+    // Ignored: foo, bar and .old.tmp. Kept: the negation, the templated block
+    // (machine dependent, so not honored) and a file `*` cannot reach.
+    for gone in [".config/foo", ".config/bar", ".old.tmp"] {
+        assert!(!names.iter().any(|n| n == gone), "{gone} in {names:?}");
+    }
+    for kept in [".config/keep", ".config/linuxonly", ".config/y.tmp"] {
+        assert!(names.iter().any(|n| n == kept), "{kept} not in {names:?}");
+    }
+    let out = render_human(&rep, false, false);
+    assert!(
+        out.contains("3 ignored by .dredgeignore or .chezmoiignore"),
+        "{out}"
+    );
+}
+
+#[test]
+fn chezmoiignore_is_not_read_for_a_stow_directory() {
+    let e = Env::new();
+    e.d("zsh/.zshrc", "export A=1\n");
+    e.d(".chezmoiignore", ".config/foo\n");
+    e.h(".config/foo/a.conf", "k = 1\n");
+    let rep = e.run(&e.with_dots(&["--layout", "stow"]));
+    assert!(!rep.chezmoi_ignore);
+    assert!(rep.units.iter().any(|u| u.path.ends_with(".config/foo")));
+}
+
+#[test]
+fn directories_with_the_same_name_get_distinguishing_labels() {
+    let report = Report {
+        home: PathBuf::from("/h"),
+        dotfiles: vec![
+            PathBuf::from("/h/work/dotfiles"),
+            PathBuf::from("/h/personal/dotfiles"),
+            PathBuf::from("/h/other"),
+        ],
+        ..Report::default()
+    };
+    assert_eq!(
+        display_path(&report, Path::new("/h/work/dotfiles/zsh/.zshrc")),
+        "~/work/dotfiles/zsh/.zshrc"
+    );
+    let report = Report {
+        home: PathBuf::from("/elsewhere"),
+        ..report
+    };
+    assert_eq!(
+        display_path(&report, Path::new("/h/work/dotfiles/zsh/.zshrc")),
+        "work/dotfiles/zsh/.zshrc"
+    );
+    assert_eq!(
+        display_path(&report, Path::new("/h/personal/dotfiles/a")),
+        "personal/dotfiles/a"
+    );
+    assert_eq!(display_path(&report, Path::new("/h/other/b")), "other/b");
+}
+
+#[test]
+fn hints_print_a_chezmoi_add_command_per_untracked_item() {
+    let e = Env::new();
+    e.d("dot_zshrc", "export A=1\n");
+    e.d(".chezmoiignore", "");
+    e.h(".config/nvim/init.lua", "x\n");
+    let rep = e.run(&e.with_dots(&["--hints"]));
+    let out = render_human(&rep, false, false);
+    assert!(
+        out.contains("HOW TO ADOPT (run these yourself, dredge never does)"),
+        "{out}"
+    );
+    assert!(out.contains("\n  chezmoi add ~/.config/nvim\n"), "{out}");
+    let plain = render_human(&e.run(&e.with_dots(&[])), false, false);
+    assert!(!plain.contains("HOW TO ADOPT"), "{plain}");
+}
+
+#[test]
+fn hints_print_a_stow_command_and_never_adopt_a_secret() {
+    let e = Env::new();
+    e.d("zsh/.zshrc", "export A=1\n");
+    e.h(".config/nvim/init.lua", "x\n");
+    e.h(
+        ".config/ngrok/ngrok.yml",
+        &format!("authtoken: {NGROK_VALUE}\n"),
+    );
+    let rep = e.run(&e.with_dots(&["--hints"]));
+    let dots = fs::canonicalize(e.dots()).unwrap();
+    let dots = dots.to_string_lossy();
+    let out = render_human(&rep, false, false);
+    assert!(
+        out.contains(&format!(
+            "  mkdir -p {dots}/neovim/.config && mv ~/.config/nvim {dots}/neovim/.config/ && stow -d {dots} -t ~ neovim\n"
+        )),
+        "{out}"
+    );
+    assert!(
+        out.contains(
+            "  # ~/.config/ngrok holds a secret: keep it out of the repo, or encrypt it first\n"
+        ),
+        "{out}"
+    );
+    assert!(!out.contains("mv ~/.config/ngrok"), "{out}");
+    // Hints never reach the JSON.
+    assert!(!render_json(&rep).contains("HOW TO ADOPT"));
+}
+
+#[test]
+fn hints_without_a_dotfiles_directory_say_so_on_stderr() {
+    let e = Env::new();
+    e.h(".config/nvim/init.lua", "x\n");
+    let rep = e.run(&e.args(&["--hints"]));
+    assert!(rep.adopt.is_none());
+    assert!(rep.notes.iter().any(|n| n.contains("--hints needs")));
+}

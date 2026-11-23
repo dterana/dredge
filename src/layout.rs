@@ -204,7 +204,7 @@ fn walk_chezmoi(
 /// small regular file (not a symlink, FIFO, etc.) naming a plain relative
 /// subdirectory that is a real directory (not a symlink). On any violation
 /// it is ignored and `dir` itself is indexed.
-fn chezmoi_root(dir: &Path) -> PathBuf {
+pub(crate) fn chezmoi_root(dir: &Path) -> PathBuf {
     const MAX_ROOT_FILE: u64 = 4096;
     let fallback = || dir.to_path_buf();
     let file = dir.join(".chezmoiroot");

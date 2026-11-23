@@ -16,7 +16,8 @@ use std::path::{Path, PathBuf};
 use owo_colors::OwoColorize;
 use serde_json::{json, Value};
 
-use crate::model::{Finding, Kind, Report, Tracking, Unit};
+use crate::layout::Layout;
+use crate::model::{Adopt, Finding, Kind, Report, Tracking, Unit};
 use crate::secrets::MAX_SCAN_BYTES;
 use crate::walk::MAX_DEPTH;
 
@@ -26,10 +27,49 @@ pub const UNKNOWN_CAP: usize = 20;
 /// "In repo, missing on this machine" entries shown without `--all`.
 pub const MISSING_CAP: usize = 20;
 
+/// Adopt commands shown without `--all`.
+const ADOPT_CAP: usize = 20;
+
 const APP_W: usize = 14;
 const PATH_W: usize = 44;
 
-/// Display a path: `~/...` under home, `<repo dir name>/...` under a
+/// What the ignore list was read from.
+fn ignore_names(report: &Report) -> &'static str {
+    if report.chezmoi_ignore {
+        ".dredgeignore or .chezmoiignore"
+    } else {
+        ".dredgeignore"
+    }
+}
+
+/// A short label for each dotfiles directory: its own name, or when two share
+/// a name, enough of the path above it to tell them apart (`work/dotfiles`
+/// and `personal/dotfiles`).
+fn dotfiles_labels(dirs: &[PathBuf]) -> Vec<String> {
+    let comps = |d: &PathBuf, k: usize| -> String {
+        let parts: Vec<String> = d
+            .components()
+            .rev()
+            .take(k)
+            .map(|c| c.as_os_str().to_string_lossy().into_owned())
+            .collect();
+        parts.into_iter().rev().collect::<Vec<_>>().join("/")
+    };
+    dirs.iter()
+        .map(|d| {
+            let depth = d.components().count().max(1);
+            for k in 1..=depth {
+                let mine = comps(d, k);
+                if dirs.iter().filter(|o| *o != d).all(|o| comps(o, k) != mine) {
+                    return mine;
+                }
+            }
+            d.to_string_lossy().into_owned()
+        })
+        .collect()
+}
+
+/// Display a path: `~/...` under home, `<repo dir label>/...` under a
 /// dotfiles dir (the first listed one that contains it), else absolute.
 /// Lossy, for display only.
 pub fn display_path(report: &Report, p: &Path) -> String {
@@ -41,12 +81,9 @@ pub fn display_path(report: &Report, p: &Path) -> String {
             return format!("~/{}", rel.to_string_lossy());
         }
     }
-    for d in &report.dotfiles {
+    let labels = dotfiles_labels(&report.dotfiles);
+    for (d, name) in report.dotfiles.iter().zip(labels) {
         if let Ok(rel) = p.strip_prefix(d) {
-            let name = d
-                .file_name()
-                .map(|n| n.to_string_lossy().into_owned())
-                .unwrap_or_else(|| d.to_string_lossy().into_owned());
             if rel.as_os_str().is_empty() {
                 return name;
             }
@@ -85,6 +122,127 @@ fn collapsed_root(report: &Report, p: &Path) -> Option<usize> {
 fn in_library(report: &Report, p: &Path) -> bool {
     p.strip_prefix(&report.home)
         .is_ok_and(|rel| rel.starts_with(LIBRARY) && rel != Path::new(LIBRARY))
+}
+
+/// A path as a shell word: `~/rel` when the name is plain, else a double
+/// quoted `"$HOME/rel"` with the characters the shell would act on escaped.
+/// Paths outside home are written absolute, quoted the same way.
+fn shell_word(report: &Report, p: &Path) -> String {
+    let plain = |s: &str| {
+        s.chars()
+            .all(|c| c.is_ascii_alphanumeric() || "_./+@%:,=-".contains(c))
+    };
+    let quote = |s: &str| {
+        let mut o = String::from("\"");
+        for c in s.chars() {
+            if matches!(c, '"' | '\\' | '`' | '$') {
+                o.push('\\');
+            }
+            o.push(c);
+        }
+        o.push('"');
+        o
+    };
+    match p.strip_prefix(&report.home) {
+        Ok(rel) if !report.home.as_os_str().is_empty() => {
+            let rel = rel.to_string_lossy();
+            if plain(&rel) {
+                format!("~/{rel}")
+            } else {
+                let esc = quote(&rel);
+                format!("\"$HOME/{}\"", &esc[1..esc.len() - 1])
+            }
+        }
+        _ => {
+            let s = p.to_string_lossy();
+            if plain(&s) {
+                s.into_owned()
+            } else {
+                quote(&s)
+            }
+        }
+    }
+}
+
+/// Stow package name for a unit: the app name, else its file name without
+/// leading dots.
+fn stow_package(rel: &Path, app: Option<&str>) -> String {
+    let raw = app.map(str::to_string).unwrap_or_else(|| {
+        rel.file_name()
+            .map(|n| n.to_string_lossy().trim_start_matches('.').to_string())
+            .unwrap_or_default()
+    });
+    let name: String = raw
+        .chars()
+        .map(|c| {
+            if c.is_ascii_alphanumeric() || "-_.".contains(c) {
+                c
+            } else {
+                '-'
+            }
+        })
+        .collect();
+    if name.is_empty() {
+        "misc".to_string()
+    } else {
+        name
+    }
+}
+
+/// One adopt command per untracked config unit, capped like the other lists.
+fn adopt_lines(report: &Report, adopt: &Adopt, all: bool) -> Vec<String> {
+    let units: Vec<&Unit> = report
+        .units
+        .iter()
+        .filter(|u| u.kind == Kind::Config && is_untracked(u.tracking) && !u.ignored && !u.symlink)
+        .filter(|u| u.path.strip_prefix(&report.home).is_ok())
+        .collect();
+    let shown = if all {
+        units.len()
+    } else {
+        units.len().min(ADOPT_CAP)
+    };
+    let dir = shell_word(report, &adopt.dir);
+    let home = match shell_word(report, &report.home).as_str() {
+        "~/" => "~".to_string(),
+        w => w.to_string(),
+    };
+    let mut lines = Vec::new();
+    for u in &units[..shown] {
+        let rel = u.path.strip_prefix(&report.home).unwrap_or(&u.path);
+        let src = shell_word(report, &u.path);
+        if !u.findings.is_empty() {
+            lines.push(match adopt.layout {
+                Layout::Chezmoi => format!("  chezmoi add --encrypt {src}   # holds a secret"),
+                Layout::Stow => format!(
+                    "  # {} holds a secret: keep it out of the repo, or encrypt it first",
+                    display_path(report, &u.path)
+                ),
+            });
+            continue;
+        }
+        lines.push(match adopt.layout {
+            Layout::Chezmoi => format!("  chezmoi add {src}"),
+            Layout::Stow => {
+                let pkg = stow_package(rel, u.app.as_deref());
+                let parent = rel.parent().filter(|p| !p.as_os_str().is_empty());
+                let pkg_dir = match parent {
+                    Some(par) => shell_word(report, &adopt.dir.join(&pkg).join(par)),
+                    None => shell_word(report, &adopt.dir.join(&pkg)),
+                };
+                format!(
+                    "  mkdir -p {pkg_dir} && mv {src} {pkg_dir}/ && stow -d {dir} -t {home} {pkg}"
+                )
+            }
+        });
+    }
+    if shown < units.len() {
+        lines.push(format!(
+            "  (+ {} more, run with --all to list)",
+            thousands(units.len() - shown)
+        ));
+    }
+    lines
 }
 
 fn lossy(p: &Path) -> String {
@@ -259,7 +417,10 @@ pub fn render_human(report: &Report, color: bool, all: bool) -> String {
                 p.paint(Tone::Danger, &format!("SECRET  {}", finding_text(f)))
             );
             if u.ignored {
-                line.push_str(&p.paint(Tone::Dim, "  (ignored by .dredgeignore)"));
+                line.push_str(&p.paint(
+                    Tone::Dim,
+                    &format!("  (ignored by {})", ignore_names(report)),
+                ));
             } else if is_tracked(u.tracking) {
                 line.push_str(&p.paint(Tone::Dim, "  (in a tracked unit)"));
             }
@@ -289,6 +450,18 @@ pub fn render_human(report: &Report, color: bool, all: bool) -> String {
         })
         .collect();
     out.section(&h("UNTRACKED CONFIG", false), &lines);
+
+    // HOW TO ADOPT (only with --hints): commands to run by hand.
+    if let Some(adopt) = &report.adopt {
+        let lines = adopt_lines(report, adopt, all);
+        out.section(
+            &h(
+                "HOW TO ADOPT (run these yourself, dredge never does)",
+                false,
+            ),
+            &lines,
+        );
+    }
 
     // TRACKED, DRIFTED: one line per drifted file.
     let mut lines = Vec::new();
@@ -418,10 +591,11 @@ pub fn render_human(report: &Report, color: bool, all: bool) -> String {
     out.buf.push('\n');
     let _ = writeln!(
         out.buf,
-        "{}  {} cache/state items, {} ignored by .dredgeignore",
+        "{}  {} cache/state items, {} ignored by {}",
         h("IGNORED", false),
         thousands(report.cache_state_count),
-        thousands(report.ignored_by_file)
+        thousands(report.ignored_by_file),
+        ignore_names(report)
     );
     if report.pruned_dirs > 0 {
         let n = report.pruned_dirs;
@@ -562,6 +736,31 @@ pub fn render_json(report: &Report) -> String {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn shell_words_are_quoted_only_when_needed() {
+        let report = Report {
+            home: PathBuf::from("/h"),
+            ..Report::default()
+        };
+        let w = |p: &str| shell_word(&report, Path::new(p));
+        assert_eq!(w("/h/.config/nvim"), "~/.config/nvim");
+        assert_eq!(w("/h/.config/my app"), "\"$HOME/.config/my app\"");
+        assert_eq!(w("/h/a$b\"c"), "\"$HOME/a\\$b\\\"c\"");
+        assert_eq!(w("/other/x y"), "\"/other/x y\"");
+        assert_eq!(w("/other/x"), "/other/x");
+        assert_eq!(w("/h"), "~/");
+    }
+
+    #[test]
+    fn stow_package_names_are_plain() {
+        assert_eq!(
+            stow_package(Path::new(".config/nvim"), Some("neovim")),
+            "neovim"
+        );
+        assert_eq!(stow_package(Path::new(".config/my app"), None), "my-app");
+        assert_eq!(stow_package(Path::new(".tmux.conf"), None), "tmux.conf");
+    }
+
     use super::*;
 
     #[test]
