@@ -554,7 +554,8 @@ fn preferences_plist_is_listed_but_not_scanned() {
         .find(|u| u.path == plist)
         .expect("plist listed");
     assert!(unit.findings.is_empty());
-    let out = render_human(&rep, false, false);
+    // Listed by name with --all; one count line without it.
+    let out = render_human(&rep, false, true);
     assert!(
         out.contains("~/Library/Preferences/com.example.app.plist"),
         "{out}"
@@ -1715,4 +1716,73 @@ fn collapsed_rows_keep_first_appearance_order() {
         "{out}"
     );
     assert!(rows[2].ends_with("rule: github-token, line 2"), "{out}");
+}
+
+// ---- human output: Preferences collapse, Library unreadable summary ----
+
+#[test]
+fn unknown_preference_files_collapse_into_one_line() {
+    let e = Env::new();
+    for i in 0..30 {
+        e.h(
+            &format!("Library/Preferences/com.example.app{i:02}.plist"),
+            "x\n",
+        );
+    }
+    e.h(".config/unk/a.conf", "x = 1\n");
+    let rep = e.run(&e.args(&[]));
+    let out = render_human(&rep, false, false);
+    assert!(out.contains("\nUNKNOWN (1)\n"), "{out}");
+    assert!(
+        out.contains(
+            "  (+ 30 unclassified preference files under ~/Library/Preferences, run with --all to list)\n"
+        ),
+        "{out}"
+    );
+    assert!(!out.contains("com.example.app00"), "{out}");
+    let all = render_human(&rep, false, true);
+    assert!(
+        all.contains("~/Library/Preferences/com.example.app29.plist"),
+        "{all}"
+    );
+    assert!(!all.contains("unclassified preference"), "{all}");
+    // The JSON still lists every unit.
+    let json = render_json(&rep);
+    assert!(json.contains("com.example.app00.plist"), "{json}");
+}
+
+fn unreadable_report(e: &Env, rels: &[&str]) -> Report {
+    Report {
+        home: e.home(),
+        unreadable: rels.iter().map(|r| e.home().join(r)).collect(),
+        ..Report::default()
+    }
+}
+
+#[test]
+fn unreadable_library_folders_are_one_line_with_a_full_disk_access_hint() {
+    let e = Env::new();
+    let rep = unreadable_report(
+        &e,
+        &[
+            ".ssh/locked",
+            "Library/Application Support/AddressBook",
+            "Library/Application Support/FaceTime",
+        ],
+    );
+    let out = render_human(&rep, false, false);
+    assert!(out.contains("  ~/.ssh/locked\n"), "{out}");
+    assert!(
+        out.contains("  (2 folders under ~/Library, probably protected by macOS: give your terminal Full Disk Access to scan them, or run with --all to list)\n"),
+        "{out}"
+    );
+    assert!(!out.contains("AddressBook"), "{out}");
+    let all = render_human(&rep, false, true);
+    assert!(
+        all.contains("~/Library/Application Support/AddressBook"),
+        "{all}"
+    );
+    assert!(!all.contains("Full Disk Access"), "{all}");
+    // The JSON keeps every path.
+    assert!(render_json(&rep).contains("AddressBook"));
 }
