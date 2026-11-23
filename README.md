@@ -80,6 +80,7 @@ The flags you will reach for most:
 | `--watch <PATH>` | Force a secret scan of a path the normal walk skips, such as a folder inside an app's cache. |
 | `--all` | Show everything, including tracked items. |
 | `--json` | Emit JSON instead of the report. |
+| `--hints` | Print the `stow` or `chezmoi add` command that would adopt each untracked item. It never runs anything. |
 | `--fail-on <LIST>` | Which conditions give a non-zero exit: `secrets`, `drift`, `untracked`. |
 
 The full flag list is in the [reference](docs/reference.md#flags).
@@ -115,7 +116,7 @@ Untracked config alone exits 0 unless you pass `--fail-on untracked`.
 
 ## What it does not do
 
-- It does not adopt files for you. It reports, and you run `stow` or `chezmoi add` yourself.
+- It does not adopt files for you. It reports, and with `--hints` it prints the `stow` or `chezmoi add` command, but you run it yourself.
 - It is macOS only for now.
 - It scans the current working tree of your dotfiles repo, not past commits.
 - It does not guess secrets by entropy. The generic rule ships disabled.

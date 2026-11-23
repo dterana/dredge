@@ -18,7 +18,7 @@ use crate::classify::{classify_in_unit, prunes_dir_at};
 use crate::cli::{LayoutArg, ScanArgs};
 use crate::dredgeignore::IgnoreList;
 use crate::layout::{self, Index, Layout};
-use crate::model::{Drift, Finding, Kind, Report, Tracking, Unit};
+use crate::model::{Adopt, Drift, Finding, Kind, Report, Tracking, Unit};
 use crate::progress::Progress;
 use crate::rules::Rules;
 use crate::secrets::{open_regular, scan_file, scan_file_detailed, SecretRules, SkipReason};
@@ -82,8 +82,14 @@ fn run_inner(args: &ScanArgs, progress: &mut Progress) -> Result<Report> {
     // Each directory gets its own layout detection and its own index.
     let mut sources = Vec::with_capacity(dotfiles.len());
     let mut hints = Vec::new();
+    let mut chezmoi_dirs = Vec::new();
+    let mut layouts = Vec::new();
     for d in &dotfiles {
         let layout = layout::detect(d, layout_arg);
+        layouts.push(layout);
+        if layout == Layout::Chezmoi {
+            chezmoi_dirs.push(d.clone());
+        }
         if layout == Layout::Stow {
             // Never suggest a directory that is already listed.
             hints.extend(
@@ -100,7 +106,7 @@ fn run_inner(args: &ScanArgs, progress: &mut Progress) -> Result<Report> {
             index,
         });
     }
-    let ignore = IgnoreList::load_all(&dotfiles);
+    let ignore = IgnoreList::load_all_with_chezmoi(&dotfiles, &chezmoi_dirs);
 
     let mut roots = walk::default_roots(&home);
     for r in &args.root {
@@ -258,6 +264,8 @@ fn run_inner(args: &ScanArgs, progress: &mut Progress) -> Result<Report> {
         units,
         unreadable,
         ignored_by_file: 0,
+        chezmoi_ignore: ignore.has_chezmoi_patterns(),
+        adopt: None,
         cache_state_count,
         depth_truncated: walked.depth_truncated + watch.depth_truncated,
         pruned_dirs: walked.pruned_dirs,
@@ -268,6 +276,19 @@ fn run_inner(args: &ScanArgs, progress: &mut Progress) -> Result<Report> {
         notes,
     };
     ignore.apply(&mut report, &home);
+    if args.hints {
+        match dotfiles.first().zip(layouts.first()) {
+            Some((dir, layout)) => {
+                report.adopt = Some(Adopt {
+                    dir: dir.clone(),
+                    layout: *layout,
+                });
+            }
+            None => report
+                .notes
+                .push("--hints needs a --dotfiles directory to adopt into".to_string()),
+        }
+    }
     Ok(report)
 }
 

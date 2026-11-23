@@ -58,6 +58,11 @@ pub struct ScanArgs {
     #[arg(long)]
     pub json: bool,
 
+    /// Print the command that would adopt each untracked config item into the
+    /// first --dotfiles directory (stow or chezmoi). Nothing is ever run
+    #[arg(long)]
+    pub hints: bool,
+
     /// Never show the progress line on stderr
     #[arg(long)]
     pub no_progress: bool,

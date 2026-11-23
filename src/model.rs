@@ -73,6 +73,13 @@ pub struct Unit {
     pub drifted: Vec<Drift>,
 }
 
+/// The dotfiles directory `--hints` adopts into, and how it is laid out.
+#[derive(Debug, Clone)]
+pub struct Adopt {
+    pub dir: PathBuf,
+    pub layout: crate::layout::Layout,
+}
+
 #[derive(Debug, Clone, Default)]
 pub struct Report {
     /// Canonical home directory; used to display paths as `~/...`.
@@ -83,6 +90,11 @@ pub struct Report {
     pub units: Vec<Unit>,
     pub unreadable: Vec<PathBuf>,
     pub ignored_by_file: usize,
+    /// True when `.chezmoiignore` patterns were part of the ignore list, so the
+    /// human report names both files.
+    pub chezmoi_ignore: bool,
+    /// Where `--hints` suggests adopting files, or `None` without `--hints`.
+    pub adopt: Option<Adopt>,
     pub cache_state_count: usize,
     /// Directories not entered because they sit at the walk depth cap.
     pub depth_truncated: usize,
